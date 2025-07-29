@@ -1,7 +1,0 @@
-## IDF Component Manager Manifest File
-dependencies:
-  ## Required IDF version
-  idf:
-    version: '>=4.1.0'
-  bluecherry/bluecherry:
-    version: ">=1.0.0"
