@@ -1,0 +1,24 @@
+version: "1.0.0"
+
+description: "BlueCherry ESP-IDF library"
+url: "https://github.com/bluecherry/bluecherry-esp-idf"
+repository: "https://github.com/bluecherry/bluecherry-esp-idf"
+documentation: "https://docs.bluecherry.io"
+issues: "https://github.com/bluecherry/bluecherry-esp-idf/issues"
+discussion: "https://discord.gg/u3F4YzXbKw"
+license: LICENSE.md
+exclude:
+  - examples/**
+tags:
+  - IoT
+  - Communication
+  - CoAP
+  - MQTT
+
+targets:
+  - esp32
+  - esp32s2
+  - esp32s3
+  - esp32c3
+  - esp32c6
+  - esp32c5

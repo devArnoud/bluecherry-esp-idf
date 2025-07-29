@@ -1,0 +1,6 @@
+.vscode/
+build/
+
+examples/wifi-template/sdkconfig
+examples/wifi-template/build/
+examples/wifi-template/build/.vscode
