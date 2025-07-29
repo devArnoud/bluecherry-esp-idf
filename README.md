@@ -1,5 +1,7 @@
 # BlueCherry library for ESP-IDF
 
+[![Component Registry](https://components.espressif.com/components/bluecherry/bluecherry/badge.svg)](https://components.espressif.com/components/bluecherry/bluecherry)
+
 ## Overview
 
 The [BlueCherry](https://www.bluecherry.io) platform is used to securely and efficiently connect IoT
