@@ -27,6 +27,10 @@
 #ifndef BLUECHERRY_H
 #define BLUECHERRY_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @brief This return code is used by BlueCherry sync to signal if it want's to continue syncing. 
  */
@@ -116,5 +120,9 @@ esp_err_t bluecherry_sync();
  * @return ESP_OK on success. 
  */
 esp_err_t bluecherry_publish(uint8_t topic, uint16_t len, const uint8_t *data);
+
+#ifdef __cplusplus
+};
+#endif
 
 #endif
