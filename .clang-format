@@ -12,7 +12,7 @@ BraceWrapping:
 SpaceBeforeParens: Never
 SpacesInParentheses: false
 SpacesInSquareBrackets: false
-PointerAlignment: Right
+PointerAlignment: Left
 SpaceAfterCStyleCast: true
 Cpp11BracedListStyle: false
 SpaceBeforeCpp11BracedList: true

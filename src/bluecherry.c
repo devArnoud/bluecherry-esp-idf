@@ -45,17 +45,17 @@
 /**
  * @brief The logging tag for this BlueCherry module.
  */
-static const char *TAG = "BlueCherry";
+static const char* TAG = "BlueCherry";
 
 /**
  * @brief The hostname of the BlueCherry cloud.
  */
-static const char *BLUECHERRY_HOST = "coap.bluecherry.io";
+static const char* BLUECHERRY_HOST = "coap.bluecherry.io";
 
 /**
  * @brief The port of the BlueCherry cloud.
  */
-static const char *BLUECHERRY_PORT = "5684";
+static const char* BLUECHERRY_PORT = "5684";
 
 /**
  * @brief The priority used for automatically syncing with BlueCherry.
@@ -96,7 +96,7 @@ static const uint32_t BLUECHERRY_SSL_READ_TIMEOUT = 100;
  * @brief The BlueCherry CA root + intermediate certificate used for CoAP DTLS
  * communication.
  */
-static const char *BLUECHERRY_CA = "-----BEGIN CERTIFICATE-----\r\n\
+static const char* BLUECHERRY_CA = "-----BEGIN CERTIFICATE-----\r\n\
 MIIBlTCCATqgAwIBAgICEAAwCgYIKoZIzj0EAwMwGjELMAkGA1UEBhMCQkUxCzAJ\r\n\
 BgNVBAMMAmNhMB4XDTI0MDMyNDEzMzM1NFoXDTQ0MDQwODEzMzM1NFowJDELMAkG\r\n\
 A1UEBhMCQkUxFTATBgNVBAMMDGludGVybWVkaWF0ZTBZMBMGByqGSM49AgEGCCqG\r\n\
@@ -149,7 +149,7 @@ typedef struct {
   /**
    * @brief A pointer to the data.
    */
-  uint8_t *data;
+  uint8_t* data;
 } _bluecherry_msg_t;
 
 /**
@@ -219,7 +219,7 @@ typedef struct {
   /**
    * @brief Optional user arguments to pass to the incoming message handler.
    */
-  void *msg_handler_args;
+  void* msg_handler_args;
 
   /**
    * @brief The current CoAP message id that is used.
@@ -264,7 +264,7 @@ static _bluecherry_t _bluecherry_opdata = { 0 };
  *
  * @return The number of bytes read from the socket.
  */
-static int _bluecherry_mbed_dtls_read(unsigned char *buf, size_t len)
+static int _bluecherry_mbed_dtls_read(unsigned char* buf, size_t len)
 {
   int ret;
 
@@ -300,7 +300,7 @@ static int _bluecherry_mbed_dtls_read(unsigned char *buf, size_t len)
  *
  * @return The Mbed TLS result code.
  */
-static int _bluecherry_mbed_dtls_write(const unsigned char *buf, size_t len)
+static int _bluecherry_mbed_dtls_write(const unsigned char* buf, size_t len)
 {
   int ret;
 
@@ -333,10 +333,10 @@ static int _bluecherry_mbed_dtls_write(const unsigned char *buf, size_t len)
  *
  * @return ESP_OK on success.
  */
-static esp_err_t _bluecherry_coap_rxtx(_bluecherry_msg_t *msg)
+static esp_err_t _bluecherry_coap_rxtx(_bluecherry_msg_t* msg)
 {
   uint8_t no_payload_hdr[BLUECHERRY_COAP_HEADER_SIZE];
-  uint8_t *data = msg == NULL ? no_payload_hdr : msg->data;
+  uint8_t* data = msg == NULL ? no_payload_hdr : msg->data;
   size_t data_len = msg == NULL ? BLUECHERRY_COAP_HEADER_SIZE : msg->len;
 
   if(data_len < BLUECHERRY_COAP_HEADER_SIZE) {
@@ -399,7 +399,7 @@ static esp_err_t _bluecherry_coap_rxtx(_bluecherry_msg_t *msg)
  *
  * @return None.
  */
-static void _bluecherry_sync_task(void *args)
+static void _bluecherry_sync_task(void* args)
 {
   while(true) {
     bluecherry_sync();
@@ -418,9 +418,9 @@ static void _bluecherry_sync_task(void *args)
  *
  * @return The number of bytes sent on success, or -1 on error.
  */
-static int _bluecherry_dtls_send(void *ctx, const unsigned char *buf, size_t len)
+static int _bluecherry_dtls_send(void* ctx, const unsigned char* buf, size_t len)
 {
-  int sock = *(int *) ctx;
+  int sock = *(int*) ctx;
   return send(sock, buf, len, 0);
 }
 
@@ -435,9 +435,9 @@ static int _bluecherry_dtls_send(void *ctx, const unsigned char *buf, size_t len
  *
  * @return int Number of bytes received on success, 0 if the connection was closed, or -1 on error.
  */
-static int _bluecherry_dtls_recv(void *ctx, unsigned char *buf, size_t len)
+static int _bluecherry_dtls_recv(void* ctx, unsigned char* buf, size_t len)
 {
-  int sock = *(int *) ctx;
+  int sock = *(int*) ctx;
   return recv(sock, buf, len, 0);
 }
 
@@ -454,7 +454,7 @@ static esp_err_t bluecherry_connect(void)
   struct addrinfo hints = { 0 };
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_DGRAM;
-  struct addrinfo *res = NULL;
+  struct addrinfo* res = NULL;
   ret = getaddrinfo(BLUECHERRY_HOST, BLUECHERRY_PORT, &hints, &res);
   if(ret != 0 || res == NULL) {
     ESP_LOGE(TAG, "DNS lookup failed: %d", ret);
@@ -511,8 +511,8 @@ static esp_err_t bluecherry_connect(void)
   return ESP_OK;
 }
 
-esp_err_t bluecherry_init(const char *device_cert, const char *device_key,
-                          bluecherry_msg_handler_t msg_handler, void *msg_handler_args,
+esp_err_t bluecherry_init(const char* device_cert, const char* device_key,
+                          bluecherry_msg_handler_t msg_handler, void* msg_handler_args,
                           bool auto_sync)
 {
   if(_bluecherry_opdata.state != BLUECHERRY_STATE_UNINITIALIZED) {
@@ -551,21 +551,21 @@ esp_err_t bluecherry_init(const char *device_cert, const char *device_key,
     goto error;
   }
 
-  ret = mbedtls_x509_crt_parse(&_bluecherry_opdata.cacert, (const uint8_t *) BLUECHERRY_CA,
+  ret = mbedtls_x509_crt_parse(&_bluecherry_opdata.cacert, (const uint8_t*) BLUECHERRY_CA,
                                strlen(BLUECHERRY_CA) + 1);
   if(ret != 0) {
     ESP_LOGE(TAG, "Could not parse BlueCherry CA certificate: -%04X", -ret);
     goto error;
   }
 
-  ret = mbedtls_x509_crt_parse(&_bluecherry_opdata.devcert, (const uint8_t *) device_cert,
+  ret = mbedtls_x509_crt_parse(&_bluecherry_opdata.devcert, (const uint8_t*) device_cert,
                                strlen(device_cert) + 1);
   if(ret != 0) {
     ESP_LOGE(TAG, "Could not parse BlueCherry device certificate: -%04X", -ret);
     goto error;
   }
 
-  ret = mbedtls_pk_parse_key(&_bluecherry_opdata.devkey, (const uint8_t *) device_key,
+  ret = mbedtls_pk_parse_key(&_bluecherry_opdata.devkey, (const uint8_t*) device_key,
                              strlen(device_key) + 1, NULL, 0, mbedtls_entropy_func,
                              &_bluecherry_opdata.ctr_drbg);
   if(ret != 0) {
@@ -759,7 +759,7 @@ esp_err_t bluecherry_sync()
   return ESP_OK;
 }
 
-esp_err_t bluecherry_publish(uint8_t topic, uint16_t len, const uint8_t *data)
+esp_err_t bluecherry_publish(uint8_t topic, uint16_t len, const uint8_t* data)
 {
   ESP_LOGD(TAG, "Scheduling publish on topic 0x%02X with %dB of data", topic, len);
   if(len >
@@ -770,7 +770,7 @@ esp_err_t bluecherry_publish(uint8_t topic, uint16_t len, const uint8_t *data)
 
   size_t total_len = BLUECHERRY_COAP_HEADER_SIZE + BLUECHERRY_MQTT_HEADER_SIZE + len;
 
-  uint8_t *data_cpy = malloc(total_len);
+  uint8_t* data_cpy = malloc(total_len);
   if(data_cpy == NULL) {
     ESP_LOGE(TAG, "Could not allocate publish buffer: %s", strerror(errno));
     return ESP_ERR_NO_MEM;

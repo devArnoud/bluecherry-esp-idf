@@ -75,8 +75,8 @@ typedef enum {
  *
  * @return None
  */
-typedef void (*bluecherry_msg_handler_t)(uint8_t topic, uint16_t len, const uint8_t *data,
-                                         void *args);
+typedef void (*bluecherry_msg_handler_t)(uint8_t topic, uint16_t len, const uint8_t* data,
+                                         void* args);
 
 /**
  * @brief Initialize the BlueCherry subsystem without ZTP.
@@ -91,8 +91,8 @@ typedef void (*bluecherry_msg_handler_t)(uint8_t topic, uint16_t len, const uint
  *
  * @return ESP_OK on success.
  */
-esp_err_t bluecherry_init(const char *device_cert, const char *device_key,
-                          bluecherry_msg_handler_t msg_handler, void *msg_handler_args,
+esp_err_t bluecherry_init(const char* device_cert, const char* device_key,
+                          bluecherry_msg_handler_t msg_handler, void* msg_handler_args,
                           bool auto_sync);
 
 /**
@@ -118,7 +118,7 @@ esp_err_t bluecherry_sync();
  *
  * @return ESP_OK on success.
  */
-esp_err_t bluecherry_publish(uint8_t topic, uint16_t len, const uint8_t *data);
+esp_err_t bluecherry_publish(uint8_t topic, uint16_t len, const uint8_t* data);
 
 #ifdef __cplusplus
 };
