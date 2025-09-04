@@ -17,7 +17,8 @@
  * GNU Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public License
- * along with this program. If not, see <https://www.gnu.org/licenses/lgpl-3.0.html>.
+ * along with this program. If not, see
+ * <https://www.gnu.org/licenses/lgpl-3.0.html>.
  */
 
 #include "bluecherry.h"
@@ -47,17 +48,17 @@
 /**
  * @brief The logging tag for this BlueCherry module.
  */
-static const char* TAG = "BlueCherry";
+static const char *TAG = "BlueCherry";
 
 /**
  * @brief The hostname of the BlueCherry cloud.
  */
-static const char* BLUECHERRY_HOST = "coap.bluecherry.io";
+static const char *BLUECHERRY_HOST = "coap.bluecherry.io";
 
 /**
  * @brief The port of the BlueCherry cloud.
  */
-static const char* BLUECHERRY_PORT = "5684";
+static const char *BLUECHERRY_PORT = "5684";
 
 /**
  * @brief The priority used for automatically syncing with BlueCherry.
@@ -90,12 +91,14 @@ static const double BLUECHERRY_ACK_TIMEOUT = 2.0;
 static const double BLUECHERRY_ACK_RANDOM_FACTOR = 1.5;
 
 /**
- * @brief The maximum number of milliseconds to wait for a datagram to arrive on a socket.
+ * @brief The maximum number of milliseconds to wait for a datagram to arrive on
+ * a socket.
  */
 static const uint32_t BLUECHERRY_SSL_READ_TIMEOUT = 100;
 
 /**
- * @brief The BlueCherry CA root + intermediate certificate used for CoAP DTLS communication.
+ * @brief The BlueCherry CA root + intermediate certificate used for CoAP DTLS
+ * communication.
  */
 static const char *BLUECHERRY_CA = "-----BEGIN CERTIFICATE-----\r\n\
 MIIBlTCCATqgAwIBAgICEAAwCgYIKoZIzj0EAwMwGjELMAkGA1UEBhMCQkUxCzAJ\r\n\
@@ -124,33 +127,33 @@ VYg4UI2D74WfVxn+NyVd2/aXTvSBp8VgyV3odA==\r\n\
  * @brief The types of CoAP packets.
  */
 typedef enum {
-    BLUECHERRY_COAP_TYPE_CON = 0,
-    BLUECHERRY_COAP_TYPE_NON = 1,
-    BLUECHERRY_COAP_TYPE_ACK = 2,
-    BLUECHERRY_COAP_TYPE_RST = 3
+  BLUECHERRY_COAP_TYPE_CON = 0,
+  BLUECHERRY_COAP_TYPE_NON = 1,
+  BLUECHERRY_COAP_TYPE_ACK = 2,
+  BLUECHERRY_COAP_TYPE_RST = 3
 } _bluecherry_coap_type;
 
 /**
  * @brief The types of CoAP responses.
  */
 typedef enum {
-    BLUECHERRY_COAP_RSP_VALID = 0x43,
-    BLUECHERRY_COAP_RSP_CONTINUE = 0x61
+  BLUECHERRY_COAP_RSP_VALID = 0x43,
+  BLUECHERRY_COAP_RSP_CONTINUE = 0x61
 } _bluecherry_coap_response;
 
 /**
  * @brief This structure represents a scheduled BlueCherry message.
  */
 typedef struct {
-    /**
-     * @brief The length of the data
-     */
-    size_t len;
+  /**
+   * @brief The length of the data
+   */
+  size_t len;
 
-    /**
-     * @brief A pointer to the data.
-     */
-    uint8_t *data;
+  /**
+   * @brief A pointer to the data.
+   */
+  uint8_t *data;
 } _bluecherry_msg_t;
 
 /**
@@ -251,18 +254,18 @@ typedef struct {
 /**
  * @brief The operational data used by the BlueCherry cloud  connection.
  */
-static _bluecherry_t _bluecherry_opdata = { 0 };
+static _bluecherry_t _bluecherry_opdata = {0};
 
 /**
  * @brief Read up to len bytes from the DTLS socket.
- * 
- * This function will read up to len bytes from the DTLS socket. The function will handle session
- * re-negotiations and retries autonomously. This function will block for a maximum of 
- * BLUECHERRY_SSL_READ_TIMEOUT milliseconds.
- * 
+ *
+ * This function will read up to len bytes from the DTLS socket. The function
+ * will handle session re-negotiations and retries autonomously. This function
+ * will block for a maximum of BLUECHERRY_SSL_READ_TIMEOUT milliseconds.
+ *
  * @param buf Pointer to a buffer to read the results in.
  * @param len The maximum number of bytes to read.
- * 
+ *
  * @return The number of bytes read from the socket.
  */
 static int _bluecherry_mbed_dtls_read(unsigned char *buf, size_t len)
@@ -277,7 +280,7 @@ static int _bluecherry_mbed_dtls_read(unsigned char *buf, size_t len)
 
     if(ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
       esp_task_wdt_reset();
-      vTaskDelay(pdMS_TO_TICKS(10));  
+      vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
 
@@ -292,13 +295,13 @@ static int _bluecherry_mbed_dtls_read(unsigned char *buf, size_t len)
 
 /**
  * @brief Write a buffer to the DTLS socket.
- * 
- * This function will write a buffer to the DTLS socket. This function will handle session
- * re-negotiations and retries autonomously.
- * 
+ *
+ * This function will write a buffer to the DTLS socket. This function will
+ * handle session re-negotiations and retries autonomously.
+ *
  * @param buf Pointer to a buffer write to the network.
  * @param len The length of the data to write to the network.
- * 
+ *
  * @return The Mbed TLS result code.
  */
 static int _bluecherry_mbed_dtls_write(const unsigned char *buf, size_t len)
@@ -323,16 +326,18 @@ static int _bluecherry_mbed_dtls_write(const unsigned char *buf, size_t len)
 }
 
 /**
- * @brief Perform CoAP transmit and receive operations with the BlueCherry cloud.
- * 
- * This function will calculate and add the correct CoAP header to the message buffer and transmit
- * the data over the the Mbed TLS DTLS socket. The message buffer must have a free space of 
- * BLUECHERRY_COAP_HEADER_SIZE preceeding the valid data. After the buffer is transmitted the
- * function will try to read the acknowledgement and new data coming from the cloud.
- * 
+ * @brief Perform CoAP transmit and receive operations with the BlueCherry
+ * cloud.
+ *
+ * This function will calculate and add the correct CoAP header to the message
+ * buffer and transmit the data over the the Mbed TLS DTLS socket. The message
+ * buffer must have a free space of BLUECHERRY_COAP_HEADER_SIZE preceeding the
+ * valid data. After the buffer is transmitted the function will try to read the
+ * acknowledgement and new data coming from the cloud.
+ *
  * @param msg The message to send or NULL to send empty sync packet.
- * 
- * @return ESP_OK on success. 
+ *
+ * @return ESP_OK on success.
  */
 static esp_err_t _bluecherry_coap_rxtx(_bluecherry_msg_t *msg)
 {
@@ -347,24 +352,21 @@ static esp_err_t _bluecherry_coap_rxtx(_bluecherry_msg_t *msg)
 
   int32_t last_acked_message_id = _bluecherry_opdata.last_acked_message_id;
   if(last_acked_message_id > _bluecherry_opdata.cur_message_id) {
-      last_acked_message_id -= 0xffff;
+    last_acked_message_id -= 0xffff;
   }
-  uint8_t missed_msg_count =  _bluecherry_opdata.cur_message_id - last_acked_message_id - 1;
+  uint8_t missed_msg_count = _bluecherry_opdata.cur_message_id - last_acked_message_id - 1;
 
   data[0] = 0x40;
   data[1] = missed_msg_count;
-  data[2] =  _bluecherry_opdata.cur_message_id >> 8;
-  data[3] =  _bluecherry_opdata.cur_message_id & 0xFF;
+  data[2] = _bluecherry_opdata.cur_message_id >> 8;
+  data[3] = _bluecherry_opdata.cur_message_id & 0xFF;
   data[4] = 0xFF;
 
-  double timeout = BLUECHERRY_ACK_TIMEOUT * 
-                   (1 + (rand() / (RAND_MAX + 1.0)) * 
-                   (BLUECHERRY_ACK_RANDOM_FACTOR - 1));
+  double timeout = BLUECHERRY_ACK_TIMEOUT *
+                   (1 + (rand() / (RAND_MAX + 1.0)) * (BLUECHERRY_ACK_RANDOM_FACTOR - 1));
 
   for(uint8_t attempt = 1; attempt <= BLUECHERRY_MAX_RETRANSMITS; ++attempt) {
     _bluecherry_opdata.last_tx_time = time(NULL);
-
-    ESP_LOGD(TAG, "Sending CoAP message (attempt %u, timeout %.1fs)", attempt, timeout);
 
     if(_bluecherry_mbed_dtls_write(data, data_len) < 0) {
       return ESP_FAIL;
@@ -382,7 +384,7 @@ static esp_err_t _bluecherry_coap_rxtx(_bluecherry_msg_t *msg)
         return ESP_FAIL;
       }
 
-      if (difftime(time(NULL), _bluecherry_opdata.last_tx_time) >= timeout) {
+      if(difftime(time(NULL), _bluecherry_opdata.last_tx_time) >= timeout) {
         break;
       }
     }
@@ -396,11 +398,11 @@ static esp_err_t _bluecherry_coap_rxtx(_bluecherry_msg_t *msg)
 
 /**
  * @brief The entrypoint of the automatic BlueCherry synchronisation task.
- * 
- * This function implements the automatic BlueCherry syncronisation. 
- * 
+ *
+ * This function implements the automatic BlueCherry syncronisation.
+ *
  * @param args A NULL pointer.
- * 
+ *
  * @return None.
  */
 static void _bluecherry_sync_task(void *args)
@@ -413,121 +415,113 @@ static void _bluecherry_sync_task(void *args)
 
 /**
  * @brief Send DTLS data over a socket.
- * 
- * This function is called by Mbed TLS to send encrypted data over the underlying socket.
- * 
+ *
+ * This function is called by Mbed TLS to send encrypted data over the
+ * underlying socket.
+ *
  * @param ctx Pointer to the socket descriptor.
  * @param buf Pointer to the buffer containing the data to send.
  * @param len Length of the data to send, in bytes.
- * 
+ *
  * @return The number of bytes sent on success, or -1 on error.
  */
 static int _bluecherry_dtls_send(void *ctx, const unsigned char *buf, size_t len)
 {
-  int sock = *(int*) ctx;
+  int sock = *(int *)ctx;
   return send(sock, buf, len, 0);
 }
 
 /**
  * @brief Receive DTLS data from a socket.
- * 
- * This function is called by Mbed TLS when a read is required from the underlying socket.
- * 
+ *
+ * This function is called by Mbed TLS when a read is required from the
+ * underlying socket.
+ *
  * @param ctx Pointer to the socket descriptor.
  * @param buf Pointer to the buffer where the received data will be stored.
  * @param len Maximum number of bytes to read into the buffer.
- * 
- * @return int Number of bytes received on success, 0 if the connection was closed, or -1 on error.
+ *
+ * @return int Number of bytes received on success, 0 if the connection was
+ * closed, or -1 on error.
  */
 static int _bluecherry_dtls_recv(void *ctx, unsigned char *buf, size_t len)
 {
-  int sock = *(int*) ctx;
+  int sock = *(int *)ctx;
   return recv(sock, buf, len, 0);
 }
 
 static esp_err_t bluecherry_connect(void)
 {
-    int ret;
-    const int handshake_total_timeout_s = 10; /* tune as needed */
+  int ret;
 
-    ESP_LOGI(TAG, "Connecting to the BlueCherry platform");
+  if(_bluecherry_opdata.sock >= 0) {
+    shutdown(_bluecherry_opdata.sock, 0);
+    close(_bluecherry_opdata.sock);
+    _bluecherry_opdata.sock = -1;
+  }
 
-    /* close old socket */
-    if (_bluecherry_opdata.sock >= 0) {
-        shutdown(_bluecherry_opdata.sock, 0);
-        close(_bluecherry_opdata.sock);
-        _bluecherry_opdata.sock = -1;
-    }
+  struct addrinfo hints = {0};
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_DGRAM;
+  struct addrinfo *res = NULL;
+  ret = getaddrinfo(BLUECHERRY_HOST, BLUECHERRY_PORT, &hints, &res);
+  if(ret != 0 || res == NULL) {
+    ESP_LOGE(TAG, "DNS lookup failed: %d", ret);
+    if(res)
+      freeaddrinfo(res);
+    return ESP_FAIL;
+  }
 
-    struct addrinfo hints = {0};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_DGRAM;
-    struct addrinfo *res = NULL;
-    ret = getaddrinfo(BLUECHERRY_HOST, BLUECHERRY_PORT, &hints, &res);
-    if (ret != 0 || res == NULL) {
-        ESP_LOGE(TAG, "DNS lookup failed: %d", ret);
-        if (res) freeaddrinfo(res);
-        return ESP_FAIL;
-    }
-
-    _bluecherry_opdata.sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (_bluecherry_opdata.sock < 0) {
-        ESP_LOGE(TAG, "socket() failed: %s", strerror(errno));
-        freeaddrinfo(res);
-        return ESP_FAIL;
-    }
-
-    struct timeval timeout;
-    timeout.tv_sec = 3;
-    timeout.tv_usec = 0;
-    setsockopt(_bluecherry_opdata.sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-
-    if (connect(_bluecherry_opdata.sock, res->ai_addr, res->ai_addrlen) != 0) {
-        ESP_LOGE(TAG, "connect() failed: %s", strerror(errno));
-        close(_bluecherry_opdata.sock);
-        _bluecherry_opdata.sock = -1;
-        freeaddrinfo(res);
-        return ESP_FAIL;
-    }
+  _bluecherry_opdata.sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+  if(_bluecherry_opdata.sock < 0) {
+    ESP_LOGE(TAG, "socket() failed: %s", strerror(errno));
     freeaddrinfo(res);
+    return ESP_FAIL;
+  }
 
-    /* reset SSL context and clear any previous session */
-    mbedtls_ssl_session_reset(&_bluecherry_opdata.ssl);
-    mbedtls_ssl_set_bio(&_bluecherry_opdata.ssl,
-                        &_bluecherry_opdata.sock,
-                        _bluecherry_dtls_send,
-                        _bluecherry_dtls_recv,
-                        NULL);
+  struct timeval timeout;
+  timeout.tv_sec = 3;
+  timeout.tv_usec = 0;
+  setsockopt(_bluecherry_opdata.sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
-    /* handshake with bounded total timeout */
-    time_t t_start = time(NULL);
-    while ((ret = mbedtls_ssl_handshake(&_bluecherry_opdata.ssl)) != 0) {
-        if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE ||
-            ret == MBEDTLS_ERR_SSL_TIMEOUT) {
-            if (difftime(time(NULL), t_start) >= handshake_total_timeout_s) {
-                ESP_LOGE(TAG, "DTLS handshake timed out");
-                return ESP_ERR_TIMEOUT;
-            }
+  if(connect(_bluecherry_opdata.sock, res->ai_addr, res->ai_addrlen) != 0) {
+    ESP_LOGE(TAG, "connect() failed: %s", strerror(errno));
+    close(_bluecherry_opdata.sock);
+    _bluecherry_opdata.sock = -1;
+    freeaddrinfo(res);
+    return ESP_FAIL;
+  }
+  freeaddrinfo(res);
 
-            esp_task_wdt_reset();
-            vTaskDelay(pdMS_TO_TICKS(10));
-            continue;
-        }
+  mbedtls_ssl_session_reset(&_bluecherry_opdata.ssl);
+  mbedtls_ssl_set_bio(&_bluecherry_opdata.ssl, &_bluecherry_opdata.sock, _bluecherry_dtls_send,
+                      _bluecherry_dtls_recv, NULL);
 
-        ESP_LOGE(TAG, "DTLS handshake failed: -0x%04X", -ret);
-        return ESP_FAIL;
+  time_t t_start = time(NULL);
+  while((ret = mbedtls_ssl_handshake(&_bluecherry_opdata.ssl)) != 0) {
+    if(ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE ||
+       ret == MBEDTLS_ERR_SSL_TIMEOUT) {
+      if(difftime(time(NULL), t_start) >= SSL_HANDSHAKE_TIMEOUT_SEC) {
+        ESP_LOGE(TAG, "DTLS handshake timed out");
+        return ESP_ERR_TIMEOUT;
+      }
+
+      esp_task_wdt_reset();
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
     }
 
-    ESP_LOGI(TAG, "BlueCherry cloud connection established successfully");
-    _bluecherry_opdata.state = BLUECHERRY_STATE_CONNECTED_IDLE;
+    ESP_LOGE(TAG, "DTLS handshake failed: -0x%04X", -ret);
+    return ESP_FAIL;
+  }
 
-    return ESP_OK;
+  _bluecherry_opdata.state = BLUECHERRY_STATE_CONNECTED_IDLE;
+
+  return ESP_OK;
 }
 
-esp_err_t bluecherry_init(const char *device_cert,
-                          const char *device_key,
-                          bluecherry_msg_handler_t msg_handler,
-                          void *msg_handler_args,
+esp_err_t bluecherry_init(const char *device_cert, const char *device_key,
+                          bluecherry_msg_handler_t msg_handler, void *msg_handler_args,
                           bool auto_sync)
 {
   if(_bluecherry_opdata.state != BLUECHERRY_STATE_UNINITIALIZED) {
@@ -545,7 +539,7 @@ esp_err_t bluecherry_init(const char *device_cert,
   }
 
   _bluecherry_opdata.out_queue =
-    xQueueCreate(BLUECHERRY_MAX_PENDING_OUTGOING_MESSAGES, sizeof(_bluecherry_msg_t));
+      xQueueCreate(BLUECHERRY_MAX_PENDING_OUTGOING_MESSAGES, sizeof(_bluecherry_msg_t));
   if(_bluecherry_opdata.out_queue == NULL) {
     ESP_LOGE(TAG, "Unable to create outgoing message queue");
     return ESP_FAIL;
@@ -559,48 +553,37 @@ esp_err_t bluecherry_init(const char *device_cert,
   mbedtls_x509_crt_init(&_bluecherry_opdata.devcert);
   mbedtls_pk_init(&_bluecherry_opdata.devkey);
 
-  int ret = mbedtls_ctr_drbg_seed(&_bluecherry_opdata.ctr_drbg,
-                                  mbedtls_entropy_func,
-                                  &_bluecherry_opdata.entropy,
-                                  mac,
-                                  sizeof(mac));
+  int ret = mbedtls_ctr_drbg_seed(&_bluecherry_opdata.ctr_drbg, mbedtls_entropy_func,
+                                  &_bluecherry_opdata.entropy, mac, sizeof(mac));
   if(ret != 0) {
     ESP_LOGE(TAG, "Could not seed RNG: -%04X", -ret);
     goto error;
   }
 
-  ret = mbedtls_x509_crt_parse(&_bluecherry_opdata.cacert,
-                               (const uint8_t*) BLUECHERRY_CA,
+  ret = mbedtls_x509_crt_parse(&_bluecherry_opdata.cacert, (const uint8_t *)BLUECHERRY_CA,
                                strlen(BLUECHERRY_CA) + 1);
   if(ret != 0) {
     ESP_LOGE(TAG, "Could not parse BlueCherry CA certificate: -%04X", -ret);
     goto error;
   }
 
-  ret = mbedtls_x509_crt_parse(&_bluecherry_opdata.devcert,
-                               (const uint8_t*) device_cert,
+  ret = mbedtls_x509_crt_parse(&_bluecherry_opdata.devcert, (const uint8_t *)device_cert,
                                strlen(device_cert) + 1);
   if(ret != 0) {
     ESP_LOGE(TAG, "Could not parse BlueCherry device certificate: -%04X", -ret);
     goto error;
   }
 
-  ret = mbedtls_pk_parse_key(&_bluecherry_opdata.devkey,
-                             (const uint8_t*) device_key,
-                             strlen(device_key) + 1,
-                             NULL,
-                             0,
-                             mbedtls_entropy_func,
+  ret = mbedtls_pk_parse_key(&_bluecherry_opdata.devkey, (const uint8_t *)device_key,
+                             strlen(device_key) + 1, NULL, 0, mbedtls_entropy_func,
                              &_bluecherry_opdata.ctr_drbg);
   if(ret != 0) {
     ESP_LOGE(TAG, "Could not parse the BlueCherry device key: -%04X", -ret);
     goto error;
   }
 
-  ret = mbedtls_ssl_config_defaults(&_bluecherry_opdata.ssl_conf,
-                                    MBEDTLS_SSL_IS_CLIENT,
-                                    MBEDTLS_SSL_TRANSPORT_DATAGRAM,
-                                    MBEDTLS_SSL_PRESET_DEFAULT);
+  ret = mbedtls_ssl_config_defaults(&_bluecherry_opdata.ssl_conf, MBEDTLS_SSL_IS_CLIENT,
+                                    MBEDTLS_SSL_TRANSPORT_DATAGRAM, MBEDTLS_SSL_PRESET_DEFAULT);
   if(ret != 0) {
     ESP_LOGE(TAG, "Could not configure DTLS defaults: -%04X", -ret);
     goto error;
@@ -609,27 +592,23 @@ esp_err_t bluecherry_init(const char *device_cert,
   mbedtls_ssl_conf_read_timeout(&_bluecherry_opdata.ssl_conf, BLUECHERRY_SSL_READ_TIMEOUT);
   mbedtls_ssl_conf_authmode(&_bluecherry_opdata.ssl_conf, MBEDTLS_SSL_VERIFY_REQUIRED);
   mbedtls_ssl_conf_ca_chain(&_bluecherry_opdata.ssl_conf, &_bluecherry_opdata.cacert, NULL);
-  mbedtls_ssl_conf_rng(&_bluecherry_opdata.ssl_conf,
-                       mbedtls_ctr_drbg_random,
+  mbedtls_ssl_conf_rng(&_bluecherry_opdata.ssl_conf, mbedtls_ctr_drbg_random,
                        &_bluecherry_opdata.ctr_drbg);
 
-  ret = mbedtls_ssl_conf_own_cert(&_bluecherry_opdata.ssl_conf,
-                                  &_bluecherry_opdata.devcert,
+  ret = mbedtls_ssl_conf_own_cert(&_bluecherry_opdata.ssl_conf, &_bluecherry_opdata.devcert,
                                   &_bluecherry_opdata.devkey);
   if(ret != 0) {
     ESP_LOGE(TAG, "Could not configure BlueCherry device certificate in context: -%04X", -ret);
     goto error;
   }
 
-  ret = mbedtls_ssl_setup(&_bluecherry_opdata.ssl,
-                          &_bluecherry_opdata.ssl_conf);
+  ret = mbedtls_ssl_setup(&_bluecherry_opdata.ssl, &_bluecherry_opdata.ssl_conf);
   if(ret != 0) {
     ESP_LOGE(TAG, "Could not setup the SSL context for use: -%04X", -ret);
     goto error;
   }
-  
-  mbedtls_ssl_set_timer_cb(&_bluecherry_opdata.ssl,
-                           &_bluecherry_opdata.timer,
+
+  mbedtls_ssl_set_timer_cb(&_bluecherry_opdata.ssl, &_bluecherry_opdata.timer,
                            mbedtls_timing_set_delay, mbedtls_timing_get_delay);
 
   ret = mbedtls_ssl_set_hostname(&_bluecherry_opdata.ssl, BLUECHERRY_HOST);
@@ -640,7 +619,7 @@ esp_err_t bluecherry_init(const char *device_cert,
 
   _bluecherry_opdata.state = BLUECHERRY_STATE_AWAIT_CONNECTION;
 
-  if (bluecherry_connect() != ESP_OK) {
+  if(bluecherry_connect() != ESP_OK) {
     ESP_LOGE(TAG, "Could not connect to BlueCherry platform");
     goto error;
   }
@@ -674,16 +653,16 @@ error:
 
 esp_err_t bluecherry_sync()
 {
-  if (_bluecherry_opdata.state == BLUECHERRY_STATE_AWAIT_CONNECTION) {
+  if(_bluecherry_opdata.state == BLUECHERRY_STATE_AWAIT_CONNECTION) {
     esp_err_t ret = bluecherry_connect();
-    if (ret != ESP_OK) {
+    if(ret != ESP_OK) {
       return ret;
     }
   }
 
   if(_bluecherry_opdata.state == BLUECHERRY_STATE_UNINITIALIZED ||
      _bluecherry_opdata.state == BLUECHERRY_STATE_CONNECTED_AWAITING_RESPONSE) {
-      ESP_LOGE(TAG, "Cannot sync in the current state");
+    ESP_LOGE(TAG, "Cannot sync in the current state");
     return ESP_ERR_INVALID_STATE;
   }
 
@@ -718,7 +697,7 @@ esp_err_t bluecherry_sync()
 
   uint8_t header = _bluecherry_opdata.in_buf[offset++];
   uint8_t version = (header >> 6) & 0x03;
-  if (version != 1) {
+  if(version != 1) {
     ESP_LOGE(TAG, "Received CoAP packet with version %d, expeced 1", version);
     return ESP_ERR_INVALID_VERSION;
   }
@@ -729,14 +708,12 @@ esp_err_t bluecherry_sync()
   uint8_t code = _bluecherry_opdata.in_buf[offset++];
   uint16_t msg_id = _bluecherry_opdata.in_buf[offset++];
   msg_id <<= 8;
-  msg_id  |= _bluecherry_opdata.in_buf[offset++];
+  msg_id |= _bluecherry_opdata.in_buf[offset++];
   offset++;
 
   if(type == BLUECHERRY_COAP_TYPE_ACK) {
     if(msg_id != _bluecherry_opdata.cur_message_id) {
-      ESP_LOGE(TAG,
-               "Received ACK for %"PRIu16" instead of %"PRIu32"",
-               msg_id,
+      ESP_LOGE(TAG, "Received ACK for %" PRIu16 " instead of %" PRIu32 "", msg_id,
                _bluecherry_opdata.cur_message_id);
       return ESP_ERR_INVALID_STATE;
     }
@@ -745,19 +722,19 @@ esp_err_t bluecherry_sync()
   }
 
   switch(code) {
-    case BLUECHERRY_COAP_RSP_VALID:
-      want_resync = false;
-      break;
-    
-      case BLUECHERRY_COAP_RSP_CONTINUE:
-      want_resync = true;
-      break;
+  case BLUECHERRY_COAP_RSP_VALID:
+    want_resync = false;
+    break;
 
-    default:
-      ESP_LOGE(TAG, "Received invalid CoAP code %02X", code);
-      return ESP_ERR_INVALID_RESPONSE;
+  case BLUECHERRY_COAP_RSP_CONTINUE:
+    want_resync = true;
+    break;
+
+  default:
+    ESP_LOGE(TAG, "Received invalid CoAP code %02X", code);
+    return ESP_ERR_INVALID_RESPONSE;
   }
-  
+
   while(offset < _bluecherry_opdata.in_buf_len) {
     uint8_t topic = _bluecherry_opdata.in_buf[offset++];
     uint8_t data_len = _bluecherry_opdata.in_buf[offset++];
@@ -765,18 +742,17 @@ esp_err_t bluecherry_sync()
     if(topic == 0x00) {
       want_resync = true;
 
-      //TODO: handle bluecherry service events
-      // if (_blueCherryProcessEvent(_bluecherry_opdata.in_buf + offset, data_len)) {
-      //     _blueCherry.emitErrorEvent = true;
-      //     _blueCherry.otaSize = 0;
-      // }
+      // TODO: handle bluecherry service events
+      //  if (_blueCherryProcessEvent(_bluecherry_opdata.in_buf + offset,
+      //  data_len)) {
+      //      _blueCherry.emitErrorEvent = true;
+      //      _blueCherry.otaSize = 0;
+      //  }
     } else if(_bluecherry_opdata.msg_handler != NULL) {
-      _bluecherry_opdata.msg_handler(topic,
-                                     data_len,
-                                     _bluecherry_opdata.in_buf + offset,
+      _bluecherry_opdata.msg_handler(topic, data_len, _bluecherry_opdata.in_buf + offset,
                                      _bluecherry_opdata.msg_handler_args);
     }
-    
+
     offset += data_len;
   }
 
@@ -797,8 +773,8 @@ esp_err_t bluecherry_sync()
 esp_err_t bluecherry_publish(uint8_t topic, uint16_t len, const uint8_t *data)
 {
   ESP_LOGD(TAG, "Scheduling publish on topic 0x%02X with %dB of data", topic, len);
-  if(len > (BLUECHERRY_MAX_MESSAGE_LEN - 
-           (BLUECHERRY_COAP_HEADER_SIZE + BLUECHERRY_MQTT_HEADER_SIZE))) {
+  if(len >
+     (BLUECHERRY_MAX_MESSAGE_LEN - (BLUECHERRY_COAP_HEADER_SIZE + BLUECHERRY_MQTT_HEADER_SIZE))) {
     ESP_LOGE(TAG, "The message exceeds the maximum allowed size");
     return ESP_ERR_INVALID_SIZE;
   }
@@ -815,10 +791,7 @@ esp_err_t bluecherry_publish(uint8_t topic, uint16_t len, const uint8_t *data)
   (data_cpy + BLUECHERRY_COAP_HEADER_SIZE)[1] = len & 0xFF;
   memcpy(data_cpy + BLUECHERRY_COAP_HEADER_SIZE + BLUECHERRY_MQTT_HEADER_SIZE, data, len);
 
-  _bluecherry_msg_t msg = {
-    .len = total_len,
-    .data = data_cpy
-  };
+  _bluecherry_msg_t msg = {.len = total_len, .data = data_cpy};
 
   if(xQueueSendToBack(_bluecherry_opdata.out_queue, &msg, 0) != pdTRUE) {
     free(data_cpy);
