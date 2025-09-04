@@ -428,19 +428,6 @@ static int _bluecherry_dtls_send(void *ctx, const unsigned char *buf, size_t len
   return send(sock, buf, len, 0);
 }
 
-// static int _bluecherry_dtls_send(void *ctx, const unsigned char *buf, size_t len)
-// {
-//     int sock = *(int*) ctx;
-//     int ret = send(sock, buf, len, 0);
-//     if (ret < 0) {
-//         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-//             return MBEDTLS_ERR_SSL_WANT_WRITE;
-//         }
-//         return -1;
-//     }
-//     return ret;
-// }
-
 /**
  * @brief Receive DTLS data from a socket.
  * 
@@ -457,19 +444,6 @@ static int _bluecherry_dtls_recv(void *ctx, unsigned char *buf, size_t len)
   int sock = *(int*) ctx;
   return recv(sock, buf, len, 0);
 }
-
-// static int _bluecherry_dtls_recv(void *ctx, unsigned char *buf, size_t len)
-// {
-//     int sock = *(int*) ctx;
-//     int ret = recv(sock, buf, len, 0);
-//     if (ret < 0) {
-//         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-//             return MBEDTLS_ERR_SSL_WANT_READ;
-//         }
-//         return -1;
-//     }
-//     return ret;
-// }
 
 static esp_err_t bluecherry_connect(void)
 {
@@ -503,6 +477,11 @@ static esp_err_t bluecherry_connect(void)
         return ESP_FAIL;
     }
 
+    struct timeval timeout;
+    timeout.tv_sec = 3;
+    timeout.tv_usec = 0;
+    setsockopt(_bluecherry_opdata.sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
     if (connect(_bluecherry_opdata.sock, res->ai_addr, res->ai_addrlen) != 0) {
         ESP_LOGE(TAG, "connect() failed: %s", strerror(errno));
         close(_bluecherry_opdata.sock);
@@ -511,10 +490,6 @@ static esp_err_t bluecherry_connect(void)
         return ESP_FAIL;
     }
     freeaddrinfo(res);
-
-    /* make non-blocking */
-    // int flags = fcntl(_bluecherry_opdata.sock, F_GETFL, 0);
-    // fcntl(_bluecherry_opdata.sock, F_SETFL, flags | O_NONBLOCK);
 
     /* reset SSL context and clear any previous session */
     mbedtls_ssl_session_reset(&_bluecherry_opdata.ssl);
