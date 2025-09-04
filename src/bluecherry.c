@@ -6,19 +6,16 @@
  * @date 2025-07-25
  * @copyright Copyright (c) 2025 DPTechnics BV
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Lesser General Public License as published
- * by the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * This program is free software: you can redistribute it and/or modify it under the terms of the
+ * GNU Lesser General Public License as published by the Free Software Foundation, either version 3
+ * of the License, or (at your option) any later version.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
+ * This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
+ * even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU Lesser General Public License
- * along with this program. If not, see
- * <https://www.gnu.org/licenses/lgpl-3.0.html>.
+ * You should have received a copy of the GNU Lesser General Public License along with this program.
+ * If not, see <https://www.gnu.org/licenses/lgpl-3.0.html>.
  */
 
 #include "bluecherry.h"
@@ -91,8 +88,7 @@ static const double BLUECHERRY_ACK_TIMEOUT = 2.0;
 static const double BLUECHERRY_ACK_RANDOM_FACTOR = 1.5;
 
 /**
- * @brief The maximum number of milliseconds to wait for a datagram to arrive on
- * a socket.
+ * @brief The maximum number of milliseconds to wait for a datagram to arrive on a socket.
  */
 static const uint32_t BLUECHERRY_SSL_READ_TIMEOUT = 100;
 
@@ -254,14 +250,14 @@ typedef struct {
 /**
  * @brief The operational data used by the BlueCherry cloud  connection.
  */
-static _bluecherry_t _bluecherry_opdata = {0};
+static _bluecherry_t _bluecherry_opdata = { 0 };
 
 /**
  * @brief Read up to len bytes from the DTLS socket.
  *
- * This function will read up to len bytes from the DTLS socket. The function
- * will handle session re-negotiations and retries autonomously. This function
- * will block for a maximum of BLUECHERRY_SSL_READ_TIMEOUT milliseconds.
+ * This function will read up to len bytes from the DTLS socket. The function will handle session
+ * re-negotiations and retries autonomously. This function will block for a maximum of
+ * BLUECHERRY_SSL_READ_TIMEOUT milliseconds.
  *
  * @param buf Pointer to a buffer to read the results in.
  * @param len The maximum number of bytes to read.
@@ -296,8 +292,8 @@ static int _bluecherry_mbed_dtls_read(unsigned char *buf, size_t len)
 /**
  * @brief Write a buffer to the DTLS socket.
  *
- * This function will write a buffer to the DTLS socket. This function will
- * handle session re-negotiations and retries autonomously.
+ * This function will write a buffer to the DTLS socket. This function will handle session
+ * re-negotiations and retries autonomously.
  *
  * @param buf Pointer to a buffer write to the network.
  * @param len The length of the data to write to the network.
@@ -326,14 +322,12 @@ static int _bluecherry_mbed_dtls_write(const unsigned char *buf, size_t len)
 }
 
 /**
- * @brief Perform CoAP transmit and receive operations with the BlueCherry
- * cloud.
+ * @brief Perform CoAP transmit and receive operations with the BlueCherry cloud.
  *
- * This function will calculate and add the correct CoAP header to the message
- * buffer and transmit the data over the the Mbed TLS DTLS socket. The message
- * buffer must have a free space of BLUECHERRY_COAP_HEADER_SIZE preceeding the
- * valid data. After the buffer is transmitted the function will try to read the
- * acknowledgement and new data coming from the cloud.
+ * This function will calculate and add the correct CoAP header to the message buffer and transmit
+ * the data over the the Mbed TLS DTLS socket. The message buffer must have a free space of
+ * BLUECHERRY_COAP_HEADER_SIZE preceeding the valid data. After the buffer is transmitted the
+ * function will try to read the acknowledgement and new data coming from the cloud.
  *
  * @param msg The message to send or NULL to send empty sync packet.
  *
@@ -416,8 +410,7 @@ static void _bluecherry_sync_task(void *args)
 /**
  * @brief Send DTLS data over a socket.
  *
- * This function is called by Mbed TLS to send encrypted data over the
- * underlying socket.
+ * This function is called by Mbed TLS to send encrypted data over the underlying socket.
  *
  * @param ctx Pointer to the socket descriptor.
  * @param buf Pointer to the buffer containing the data to send.
@@ -427,26 +420,24 @@ static void _bluecherry_sync_task(void *args)
  */
 static int _bluecherry_dtls_send(void *ctx, const unsigned char *buf, size_t len)
 {
-  int sock = *(int *)ctx;
+  int sock = *(int *) ctx;
   return send(sock, buf, len, 0);
 }
 
 /**
  * @brief Receive DTLS data from a socket.
  *
- * This function is called by Mbed TLS when a read is required from the
- * underlying socket.
+ * This function is called by Mbed TLS when a read is required from the underlying socket.
  *
  * @param ctx Pointer to the socket descriptor.
  * @param buf Pointer to the buffer where the received data will be stored.
  * @param len Maximum number of bytes to read into the buffer.
  *
- * @return int Number of bytes received on success, 0 if the connection was
- * closed, or -1 on error.
+ * @return int Number of bytes received on success, 0 if the connection was closed, or -1 on error.
  */
 static int _bluecherry_dtls_recv(void *ctx, unsigned char *buf, size_t len)
 {
-  int sock = *(int *)ctx;
+  int sock = *(int *) ctx;
   return recv(sock, buf, len, 0);
 }
 
@@ -460,7 +451,7 @@ static esp_err_t bluecherry_connect(void)
     _bluecherry_opdata.sock = -1;
   }
 
-  struct addrinfo hints = {0};
+  struct addrinfo hints = { 0 };
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_DGRAM;
   struct addrinfo *res = NULL;
@@ -560,21 +551,21 @@ esp_err_t bluecherry_init(const char *device_cert, const char *device_key,
     goto error;
   }
 
-  ret = mbedtls_x509_crt_parse(&_bluecherry_opdata.cacert, (const uint8_t *)BLUECHERRY_CA,
+  ret = mbedtls_x509_crt_parse(&_bluecherry_opdata.cacert, (const uint8_t *) BLUECHERRY_CA,
                                strlen(BLUECHERRY_CA) + 1);
   if(ret != 0) {
     ESP_LOGE(TAG, "Could not parse BlueCherry CA certificate: -%04X", -ret);
     goto error;
   }
 
-  ret = mbedtls_x509_crt_parse(&_bluecherry_opdata.devcert, (const uint8_t *)device_cert,
+  ret = mbedtls_x509_crt_parse(&_bluecherry_opdata.devcert, (const uint8_t *) device_cert,
                                strlen(device_cert) + 1);
   if(ret != 0) {
     ESP_LOGE(TAG, "Could not parse BlueCherry device certificate: -%04X", -ret);
     goto error;
   }
 
-  ret = mbedtls_pk_parse_key(&_bluecherry_opdata.devkey, (const uint8_t *)device_key,
+  ret = mbedtls_pk_parse_key(&_bluecherry_opdata.devkey, (const uint8_t *) device_key,
                              strlen(device_key) + 1, NULL, 0, mbedtls_entropy_func,
                              &_bluecherry_opdata.ctr_drbg);
   if(ret != 0) {
@@ -666,7 +657,6 @@ esp_err_t bluecherry_sync()
     return ESP_ERR_INVALID_STATE;
   }
 
-  /* Send pending messages or a poll to the BlueCherry cloud */
   _bluecherry_msg_t out_msg;
   if(xQueuePeek(_bluecherry_opdata.out_queue, &out_msg, 0) == pdPASS) {
     if(_bluecherry_coap_rxtx(&out_msg) == ESP_OK) {
@@ -690,7 +680,6 @@ esp_err_t bluecherry_sync()
     }
   }
 
-  /* Process the received acknowledgedment */
   bool want_resync = false;
 
   uint16_t offset = 0;
@@ -791,7 +780,7 @@ esp_err_t bluecherry_publish(uint8_t topic, uint16_t len, const uint8_t *data)
   (data_cpy + BLUECHERRY_COAP_HEADER_SIZE)[1] = len & 0xFF;
   memcpy(data_cpy + BLUECHERRY_COAP_HEADER_SIZE + BLUECHERRY_MQTT_HEADER_SIZE, data, len);
 
-  _bluecherry_msg_t msg = {.len = total_len, .data = data_cpy};
+  _bluecherry_msg_t msg = { .len = total_len, .data = data_cpy };
 
   if(xQueueSendToBack(_bluecherry_opdata.out_queue, &msg, 0) != pdTRUE) {
     free(data_cpy);
