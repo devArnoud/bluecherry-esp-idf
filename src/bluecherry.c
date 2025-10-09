@@ -18,239 +18,269 @@
  * If not, see <https://www.gnu.org/licenses/lgpl-3.0.html>.
  */
 
-#include "bluecherry.h"
+#include <bluecherry.h>
 
-#include <time.h>
-#include <netdb.h>
-#include <errno.h>
-#include <stdlib.h>
-#include <string.h>
-#include <esp_log.h>
-#include <esp_err.h>
-#include <esp_mac.h>
-#include <esp_task_wdt.h>
-#include <lwip/sockets.h>
-
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-#include <freertos/queue.h>
-
-#include <mbedtls/platform.h>
-#include <mbedtls/net_sockets.h>
-#include <mbedtls/entropy.h>
-#include <mbedtls/ctr_drbg.h>
-#include <mbedtls/error.h>
-#include <mbedtls/timing.h>
+/**
+ * @brief The operational data used by the BlueCherry cloud  connection.
+ */
+static _bluecherry_t _bluecherry_opdata = { 0 };
 
 /**
  * @brief The logging tag for this BlueCherry module.
  */
 static const char* TAG = "BlueCherry";
 
+#pragma region OTA
 /**
- * @brief The hostname of the BlueCherry cloud.
+ * @brief Process OTA init event
+ *
+ * This function prepares a OTA update and checks the announced update image size against
+ * the update partition size.
+ *
+ * @param data The event data, being the announced size of the image
+ * @param len The length of the update data.
+ *
+ * @return Whether we should emit an error BC event on next sync, in case announced size is
+ * too large for partitioning.
  */
-static const char* BLUECHERRY_HOST = "coap.bluecherry.io";
+static bool _processOtaInitializeEvent(uint8_t* data, uint16_t len)
+{
+  if(len != sizeof(uint32_t)) {
+    return true;
+  }
 
-/**
- * @brief The port of the BlueCherry cloud.
- */
-static const char* BLUECHERRY_PORT = "5684";
+  _bluecherry_opdata.otaSize = *((uint32_t*) data);
 
-/**
- * @brief The priority used for automatically syncing with BlueCherry.
- */
-static const UBaseType_t BLUECHERRY_SP = 10;
+  /* check if there is enough space on the update partition */
+  _bluecherry_opdata.otaPartition = esp_ota_get_next_update_partition(NULL);
+  if(!_bluecherry_opdata.otaPartition ||
+     _bluecherry_opdata.otaSize > _bluecherry_opdata.otaPartition->size ||
+     _bluecherry_opdata.otaSize == 0) {
+    ESP_LOGE(TAG, "OTA init: no OTA partition or size 0 or %lu > %lu", _bluecherry_opdata.otaSize,
+             _bluecherry_opdata.otaPartition->size);
+    return true;
+  }
 
-/**
- * @brief The size of the BlueCherry CoAP header.
- */
-static const size_t BLUECHERRY_COAP_HEADER_SIZE = 5;
+  /* initialize buffer and state */
+  _bluecherry_opdata.otaBufferPos = 0;
+  _bluecherry_opdata.otaProgress = 0;
 
-/**
- * @brief The size the the BlueCherry MQTT header.
- */
-static const size_t BLUECHERRY_MQTT_HEADER_SIZE = 2;
+  ESP_LOGD(TAG, "OTA init: size %lu <= partition size %lu", _bluecherry_opdata.otaSize,
+           _bluecherry_opdata.otaPartition->size);
 
-/**
- * @brief The maximum number of CoAP retransmits.
- */
-static const uint8_t BLUECHERRY_MAX_RETRANSMITS = 4;
-
-/**
- * @brief The CoAP acknowledgement base timeout period.
- */
-static const double BLUECHERRY_ACK_TIMEOUT = 2.0;
-
-/**
- * @brief The CoAP acknowledgement timeout period randomness factor.
- */
-static const double BLUECHERRY_ACK_RANDOM_FACTOR = 1.5;
-
-/**
- * @brief The maximum number of milliseconds to wait for a datagram to arrive on a socket.
- */
-static const uint32_t BLUECHERRY_SSL_READ_TIMEOUT = 100;
+  return false;
+}
 
 /**
- * @brief The BlueCherry CA root + intermediate certificate used for CoAP DTLS
- * communication.
+ * @brief Write a flash sector to flash, erasing the block first if on an as of yet
+ * uninitialized block
+ *
+ * @param None.
+ *
+ * @return True if succeeded, false if not.
  */
-static const char* BLUECHERRY_CA = "-----BEGIN CERTIFICATE-----\r\n\
-MIIBlTCCATqgAwIBAgICEAAwCgYIKoZIzj0EAwMwGjELMAkGA1UEBhMCQkUxCzAJ\r\n\
-BgNVBAMMAmNhMB4XDTI0MDMyNDEzMzM1NFoXDTQ0MDQwODEzMzM1NFowJDELMAkG\r\n\
-A1UEBhMCQkUxFTATBgNVBAMMDGludGVybWVkaWF0ZTBZMBMGByqGSM49AgEGCCqG\r\n\
-SM49AwEHA0IABJGFt28UrHlbPZEjzf4CbkvRaIjxDRGoeHIy5ynfbOHJ5xgBl4XX\r\n\
-hp/r8zOBLqSbu6iXGwgjp+wZJe1GCDi6D1KjZjBkMB0GA1UdDgQWBBR/rtuEomoy\r\n\
-49ovMAnj5Hpmk2gTGjAfBgNVHSMEGDAWgBR3Vw0Y1sUvMhkX7xySsX55tvsu8TAS\r\n\
-BgNVHRMBAf8ECDAGAQH/AgEAMA4GA1UdDwEB/wQEAwIBhjAKBggqhkjOPQQDAwNJ\r\n\
-ADBGAiEApN7DmuufC/aqyt6g2Y8qOWg6AXFUyTcub8/Y28XY3KgCIQCs2VUXCPwn\r\n\
-k8jR22wsqNvZfbndpHthtnPqI5+yFXrY4A==\r\n\
------END CERTIFICATE-----\r\n\
------BEGIN CERTIFICATE-----\r\n\
-MIIBmDCCAT+gAwIBAgIUDjfXeosg0fphnshZoXgQez0vO5UwCgYIKoZIzj0EAwMw\r\n\
-GjELMAkGA1UEBhMCQkUxCzAJBgNVBAMMAmNhMB4XDTI0MDMyMzE3MzU1MloXDTQ0\r\n\
-MDQwNzE3MzU1MlowGjELMAkGA1UEBhMCQkUxCzAJBgNVBAMMAmNhMFkwEwYHKoZI\r\n\
-zj0CAQYIKoZIzj0DAQcDQgAEB00rHNthOOYyKj80cd/DHQRBGSbJmIRW7rZBNA6g\r\n\
-fbEUrY9NbuhGS6zKo3K59zYc5R1U4oBM3bj6Q7LJfTu7JqNjMGEwHQYDVR0OBBYE\r\n\
-FHdXDRjWxS8yGRfvHJKxfnm2+y7xMB8GA1UdIwQYMBaAFHdXDRjWxS8yGRfvHJKx\r\n\
-fnm2+y7xMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgGGMAoGCCqGSM49\r\n\
-BAMDA0cAMEQCID7AcgACnXWzZDLYEainxVDxEJTUJFBhcItO77gcHPZUAiAu/ZMO\r\n\
-VYg4UI2D74WfVxn+NyVd2/aXTvSBp8VgyV3odA==\r\n\
------END CERTIFICATE-----\r\n";
+static bool _otaBufferToFlash(void)
+{
+  /* first bytes of new firmware must be postponed so
+   * partially written firmware is not bootable just yet
+   */
+  uint8_t skip = 0;
+
+  if(!_bluecherry_opdata.otaProgress) {
+    /* meanwhile check for the magic byte */
+    if(_bluecherry_opdata.otaBuffer[0] != ESP_IMAGE_HEADER_MAGIC) {
+      ESP_LOGD(TAG, "OTA chunk: magic header not found");
+      return false;
+    }
+
+    skip = ENCRYPTED_BLOCK_SIZE;
+    memcpy(_bluecherry_opdata.otaSkipBuffer, _bluecherry_opdata.otaBuffer, skip);
+  }
+
+  size_t flashOffset = _bluecherry_opdata.otaPartition->address + _bluecherry_opdata.otaProgress;
+
+  // if it's the block boundary, than erase the whole block from here
+  bool blockErase =
+      (_bluecherry_opdata.otaSize - _bluecherry_opdata.otaProgress >= SPI_FLASH_BLOCK_SIZE) &&
+      (flashOffset % SPI_FLASH_BLOCK_SIZE == 0);
+
+  // sector belong to unaligned partition heading block
+  bool partitionHeadSectors =
+      _bluecherry_opdata.otaPartition->address % SPI_FLASH_BLOCK_SIZE &&
+      flashOffset < (_bluecherry_opdata.otaPartition->address / SPI_FLASH_BLOCK_SIZE + 1) *
+                        SPI_FLASH_BLOCK_SIZE;
+
+  // sector belong to unaligned partition tailing block
+  bool partitionTailSectors =
+      flashOffset >= (_bluecherry_opdata.otaPartition->address + _bluecherry_opdata.otaSize) /
+                         SPI_FLASH_BLOCK_SIZE * SPI_FLASH_BLOCK_SIZE;
+
+  if(blockErase || partitionHeadSectors || partitionTailSectors) {
+    if(esp_partition_erase_range(_bluecherry_opdata.otaPartition, _bluecherry_opdata.otaProgress,
+                                 blockErase ? SPI_FLASH_BLOCK_SIZE : SPI_FLASH_SEC_SIZE) !=
+       ESP_OK) {
+      ESP_LOGE(TAG, "OTA chunk: could not erase partition");
+      return false;
+    }
+  }
+
+  if(esp_partition_write(_bluecherry_opdata.otaPartition, _bluecherry_opdata.otaProgress + skip,
+                         (uint32_t*) _bluecherry_opdata.otaBuffer + skip / sizeof(uint32_t),
+                         _bluecherry_opdata.otaBufferPos - skip) != ESP_OK) {
+    ESP_LOGE(TAG, "OTA chunk: could not write data to partition");
+    return false;
+  }
+
+  _bluecherry_opdata.otaProgress += _bluecherry_opdata.otaBufferPos;
+  _bluecherry_opdata.otaBufferPos = 0;
+
+  return true;
+}
 
 /**
- * @brief The types of CoAP packets.
+ * @brief Process OTA chunk event
+ *
+ * This function accepts a chunk of the OTA update binary image. If the chunk is empty, the
+ * BlueCherry cloud server signals a cancel of the upload in progress.
+ *
+ * @param data The chunk data
+ * @param len The length of the chunk data
+ *
+ * @return Whether we should emit an error BC event on next sync, in case size so far
+ * exceeds announced size, or if it is an empty chunk.
  */
-typedef enum {
-  BLUECHERRY_COAP_TYPE_CON = 0,
-  BLUECHERRY_COAP_TYPE_NON = 1,
-  BLUECHERRY_COAP_TYPE_ACK = 2,
-  BLUECHERRY_COAP_TYPE_RST = 3
-} _bluecherry_coap_type;
+static bool _processOtaChunkEvent(uint8_t* data, uint16_t len)
+{
+  if(!_bluecherry_opdata.otaSize || len == 0 ||
+     _bluecherry_opdata.otaProgress + len > _bluecherry_opdata.otaSize) {
+    ESP_LOGW(TAG, "OTA: cancelled because empty chunk or chunk beyond update size");
+    /**
+     * TODO: Replace hard reset with immediate response to bluecherry that OTA was aborted.
+     *
+     * Reason for hard reset: The cloud will continue to send OTA data and assume it
+     * completes successfully unless the connection is aborted.
+     */
+    // vTaskDelay(5000);
+    // esp_restart();
+    return true;
+  }
+
+  size_t left = len;
+
+  while((_bluecherry_opdata.otaBufferPos + left) > SPI_FLASH_SEC_SIZE) {
+    size_t toBuff = SPI_FLASH_SEC_SIZE - _bluecherry_opdata.otaBufferPos;
+
+    memcpy(_bluecherry_opdata.otaBuffer + _bluecherry_opdata.otaBufferPos, data + (len - left),
+           toBuff);
+    _bluecherry_opdata.otaBufferPos += toBuff;
+
+    if(!_otaBufferToFlash()) {
+      ESP_LOGE(TAG, "OTA chunk: failed to write to flash (within loop)");
+      return true;
+    } else {
+      ESP_LOGD(TAG, "OTA chunk written to flash; progress = %lu / %lu",
+               _bluecherry_opdata.otaProgress, _bluecherry_opdata.otaSize);
+    }
+
+    left -= toBuff;
+  }
+
+  memcpy(_bluecherry_opdata.otaBuffer + _bluecherry_opdata.otaBufferPos, data + (len - left), left);
+  _bluecherry_opdata.otaBufferPos += left;
+
+  if(_bluecherry_opdata.otaProgress + _bluecherry_opdata.otaBufferPos ==
+     _bluecherry_opdata.otaSize) {
+    if(!_otaBufferToFlash()) {
+      ESP_LOGE(TAG, "OTA chunk: failed to write to flash (remainder)");
+      return true;
+    } else {
+      ESP_LOGD(TAG, "OTA remainder written to flash; progress = %lu / %lu",
+               _bluecherry_opdata.otaProgress, _bluecherry_opdata.otaSize);
+    }
+  }
+
+  return false;
+}
 
 /**
- * @brief The types of CoAP responses.
+ * @brief Process an OTA finish event.
+ *
+ * This function verifies the exact announced size has been flashed, could verify the
+ * optional included SHA256.
+ *
+ * @return Whether we should emit an error BC event on next sync, in case the size
+ * mismatches the announced size, or the optional included SHA256 digest mismatches the
+ * corresponding image.
  */
-typedef enum {
-  BLUECHERRY_COAP_RSP_VALID = 0x43,
-  BLUECHERRY_COAP_RSP_CONTINUE = 0x61
-} _bluecherry_coap_response;
+static bool _processOtaFinishEvent(void)
+{
+  if(!_bluecherry_opdata.otaSize || _bluecherry_opdata.otaProgress != _bluecherry_opdata.otaSize) {
+    return true;
+  }
+
+  /* enable partition: write the stashed first bytes */
+  if(esp_partition_write(_bluecherry_opdata.otaPartition, 0,
+                         (uint32_t*) _bluecherry_opdata.otaSkipBuffer,
+                         ENCRYPTED_BLOCK_SIZE) != ESP_OK) {
+    ESP_LOGE(TAG, "OTA Finish: Could not write start of boot sector to partition");
+    return true;
+  }
+
+  /* check if partition is bootable */
+  if(esp_partition_read(_bluecherry_opdata.otaPartition, 0,
+                        (uint32_t*) _bluecherry_opdata.otaSkipBuffer,
+                        ENCRYPTED_BLOCK_SIZE) != ESP_OK) {
+    ESP_LOGE(TAG, "OTA Finish: Could not read boot partition");
+    return true;
+  }
+  if(_bluecherry_opdata.otaSkipBuffer[0] != ESP_IMAGE_HEADER_MAGIC) {
+    ESP_LOGE(TAG, "OTA Finish: Magic header is missing on partition");
+    return true;
+  }
+
+  if(esp_ota_set_boot_partition(_bluecherry_opdata.otaPartition)) {
+    ESP_LOGE(TAG, "OTA Finish: Could not set boot partition");
+    return true;
+  }
+
+  ESP_LOGI(TAG, "OTA Finish: set boot partition. Booting in new firmware.");
+  esp_restart();
+
+  return false;
+}
+
+#pragma endregion
 
 /**
- * @brief This structure represents a scheduled BlueCherry message.
+ * @brief Process an incoming BlueCherry event.
+ *
+ * This function is called when blueCherryDidRing encounters a BlueCherry management packet,
+ * eg for OTA updates.
+ *
+ * @param data The event data.
+ * @param len The length of the data block.
+ *
+ * @return Whether we should emit an error BC event on next sync.
  */
-typedef struct {
-  /**
-   * @brief The length of the data
-   */
-  size_t len;
+static bool _blueCherryProcessEvent(uint8_t* data, uint8_t len)
+{
+  switch(data[0]) {
+  case BLUECHERRY_EVENT_TYPE_OTA_INITIALIZE:
+    return _processOtaInitializeEvent(data + 1, len - 1);
 
-  /**
-   * @brief A pointer to the data.
-   */
-  uint8_t* data;
-} _bluecherry_msg_t;
+  case BLUECHERRY_EVENT_TYPE_OTA_CHUNK:
+    return _processOtaChunkEvent(data + 1, len - 1);
 
-/**
- * @brief The operational data used by the BlueCherry cloud connection.
- */
-typedef struct {
-  /**
-   * @brief The current state of the BlueCherry cloud connection.
-   */
-  bluecherry_state state;
+  case BLUECHERRY_EVENT_TYPE_OTA_FINISH:
+    return _processOtaFinishEvent();
 
-  /**
-   * @brief The Mbed TLS SSL context.
-   */
-  mbedtls_ssl_context ssl;
+  default:
+    ESP_LOGE(TAG, "Error: invalid BlueCherry event type 0x%x from cloud server", data[0]);
+    return true;
+  }
 
-  /**
-   * @brief The Mbed TLS SSL configuration.
-   */
-  mbedtls_ssl_config ssl_conf;
-
-  /**
-   * @brief The Mbed TLS random number generator context and state.
-   */
-  mbedtls_ctr_drbg_context ctr_drbg;
-
-  /**
-   * @brief The Mbed TLS entropy context.
-   */
-  mbedtls_entropy_context entropy;
-
-  /**
-   * @brief The server certificate.
-   */
-  mbedtls_x509_crt cacert;
-
-  /**
-   * @brief The device certificate.
-   */
-  mbedtls_x509_crt devcert;
-
-  /**
-   * @brief The device key.
-   */
-  mbedtls_pk_context devkey;
-
-  /**
-   * @brief The Mbed TLS delay context timer.
-   */
-  mbedtls_timing_delay_context timer;
-
-  /**
-   * @brief The socket used to communicate with the BlueCherry cloud.
-   */
-  int sock;
-
-  /**
-   * @brief The outgoing message queue.
-   */
-  QueueHandle_t out_queue;
-
-  /**
-   * @brief The message handler or NULL to ignore incoming messages.
-   */
-  bluecherry_msg_handler_t msg_handler;
-
-  /**
-   * @brief Optional user arguments to pass to the incoming message handler.
-   */
-  void* msg_handler_args;
-
-  /**
-   * @brief The current CoAP message id that is used.
-   */
-  int32_t cur_message_id;
-
-  /**
-   * @brief The last CoAP message id that was acknowledged from the cloud.
-   */
-  int32_t last_acked_message_id;
-
-  /**
-   * @brief The last CoAP transmission time.
-   */
-  time_t last_tx_time;
-
-  /**
-   * @brief The length of the last incoming buffer data.
-   */
-  size_t in_buf_len;
-
-  /**
-   * @brief The buffer to receive incoming server data in.
-   */
-  uint8_t in_buf[BLUECHERRY_MAX_MESSAGE_LEN];
-} _bluecherry_t;
-
-/**
- * @brief The operational data used by the BlueCherry cloud  connection.
- */
-static _bluecherry_t _bluecherry_opdata = { 0 };
+  return true;
+}
 
 /**
  * @brief Read up to len bytes from the DTLS socket.
@@ -401,8 +431,15 @@ static esp_err_t _bluecherry_coap_rxtx(_bluecherry_msg_t* msg)
  */
 static void _bluecherry_sync_task(void* args)
 {
+  // esp_task_wdt_add(NULL);
+
   while(true) {
-    bluecherry_sync();
+    if(bluecherry_sync() == BLUECHERRY_SYNC_CONTINUE) {
+      if(esp_task_wdt_status(NULL) == ESP_OK) {
+        esp_task_wdt_reset();
+      }
+      continue;
+    }
     vTaskDelay(pdMS_TO_TICKS(10000));
   }
 }
@@ -731,12 +768,10 @@ esp_err_t bluecherry_sync()
     if(topic == 0x00) {
       want_resync = true;
 
-      // TODO: handle bluecherry service events
-      //  if (_blueCherryProcessEvent(_bluecherry_opdata.in_buf + offset,
-      //  data_len)) {
-      //      _blueCherry.emitErrorEvent = true;
-      //      _blueCherry.otaSize = 0;
-      //  }
+      if(_blueCherryProcessEvent(_bluecherry_opdata.in_buf + offset, data_len)) {
+        _bluecherry_opdata.emitErrorEvent = true;
+        _bluecherry_opdata.otaSize = 0;
+      }
     } else if(_bluecherry_opdata.msg_handler != NULL) {
       _bluecherry_opdata.msg_handler(topic, data_len, _bluecherry_opdata.in_buf + offset,
                                      _bluecherry_opdata.msg_handler_args);

@@ -340,6 +340,7 @@ void app_main(void)
   ESP_ERROR_CHECK(bluecherry_init(devcert, devkey, bluecherry_msg_handler, NULL, true));
 
   while(true) {
+    ESP_LOGI(TAG, "Publishing message");
     bluecherry_publish(0x84, strlen("Test message") + 1, (const uint8_t*) "Test message");
     vTaskDelay(pdMS_TO_TICKS(5000));
   } 
