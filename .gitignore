@@ -1,7 +1,7 @@
 .vscode/
 build/
 dist/
-
-examples/wifi-template/sdkconfig
-examples/wifi-template/build/
-examples/wifi-template/build/.vscode
+sdkconfig
+sdkconfig.old
+dependencies.lock
+.clangd

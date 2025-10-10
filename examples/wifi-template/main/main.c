@@ -37,11 +37,6 @@
 #include "credentials/wifi.h"
 
 /**
- * @brief The number of times the device should try to connect before giving up.
- */
-#define WIFI_CONNECTION_ATTEMPTS 5
-
-/**
  * @brief The logging tag for this BlueCherry module.
  */
 static const char* TAG = "BlueCherry";
@@ -65,11 +60,6 @@ static esp_event_handler_instance_t wifi_evh;
  * @brief The WiFi event group handle.
  */
 static EventGroupHandle_t wifi_ev_group = NULL;
-
-/**
- * @brief The current number of WiFi reconnection attempts.
- */
-static int wifi_retry_count = 0;
 
 /**
  * @brief The device certificate from the symbol section of the firmware.
@@ -100,7 +90,6 @@ static void ip_ev_cb(void *arg, esp_event_base_t event_base, int32_t event_id, v
     case IP_EVENT_STA_GOT_IP:
       ip_event_got_ip_t *event_ip = (ip_event_got_ip_t *)event_data;
       ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event_ip->ip_info.ip));
-      wifi_retry_count = 0;
       xEventGroupSetBits(wifi_ev_group, BIT0);
       break;
   
@@ -111,7 +100,6 @@ static void ip_ev_cb(void *arg, esp_event_base_t event_base, int32_t event_id, v
     case IP_EVENT_GOT_IP6:
       ip_event_got_ip6_t *event_ip6 = (ip_event_got_ip6_t *)event_data;
       ESP_LOGI(TAG, "Got IPv6: " IPV6STR, IPV62STR(event_ip6->ip6_info.ip));
-      wifi_retry_count = 0;
       xEventGroupSetBits(wifi_ev_group, BIT1);
       break;
   
@@ -161,14 +149,8 @@ static void wifi_ev_cb(void *arg, esp_event_base_t event_base, int32_t event_id,
 
     case WIFI_EVENT_STA_DISCONNECTED:
       ESP_LOGI(TAG, "Wi-Fi disconnected");
-      if(wifi_retry_count < WIFI_CONNECTION_ATTEMPTS) {
-        ESP_LOGI(TAG, "Retrying to connect to Wi-Fi network...");
-        esp_wifi_connect();
-        wifi_retry_count++;
-      } else {
-        ESP_LOGI(TAG, "Failed to connect to Wi-Fi network");
-        xEventGroupSetBits(wifi_ev_group, BIT1);
-      }
+      ESP_LOGI(TAG, "Retrying to connect to Wi-Fi network...");
+      esp_wifi_connect();
       break;
 
     case WIFI_EVENT_STA_AUTHMODE_CHANGE:
@@ -337,10 +319,14 @@ void app_main(void)
 
   ESP_ERROR_CHECK(nvs_init());
   ESP_ERROR_CHECK(wifi_init(WIFI_SSID, WIFI_PASSWORD, WIFI_AUTH_MODE));
-  ESP_ERROR_CHECK(bluecherry_init(devcert, devkey, bluecherry_msg_handler, NULL, true));
+  ESP_ERROR_CHECK(bluecherry_init(devcert, devkey, bluecherry_msg_handler, NULL, true, 30));
 
   while(true) {
+    ESP_LOGI(TAG, "Publishing message");
     bluecherry_publish(0x84, strlen("Test message") + 1, (const uint8_t*) "Test message");
     vTaskDelay(pdMS_TO_TICKS(5000));
+    if (esp_task_wdt_status(NULL) == ESP_OK) {
+      esp_task_wdt_reset();
+    }
   } 
 }
