@@ -160,6 +160,11 @@ static const char* BLUECHERRY_PORT = "5684";
 static const UBaseType_t BLUECHERRY_SP = 10;
 
 /**
+ * @brief The period in seconds between automatic BlueCherry syncs.
+ */
+static const uint8_t BLUECHERRY_AUTO_SYNC_SECONDS = 10;
+
+/**
  * @brief The size of the BlueCherry CoAP header.
  */
 static const size_t BLUECHERRY_COAP_HEADER_SIZE = 5;
@@ -388,9 +393,12 @@ esp_err_t bluecherry_init(const char* device_cert, const char* device_key,
  * This function will communicate with the BlueCherry cloud and send any enqueued MQTT messages,
  * check if there are any incoming MQTT messages and check for OTA updates.
  *
- * @return ESP_OK when finished, BLUECHERRY_SYNC_CONTINUE when it wants to continue.
+ * @param blocking When true, the function will block until a message is sent or received, or the
+ *                  BLUECHERRY_AUTO_SYNC_SECONDS timeout expires.
+ *
+ * @return ESP_OK when finished, BLUECHERRY_SYNC_CONTINUE when more messages are pending.
  */
-esp_err_t bluecherry_sync();
+esp_err_t bluecherry_sync(bool blocking);
 
 /**
  * @brief Enqueue an MQTT message for publishing.

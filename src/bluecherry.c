@@ -468,12 +468,15 @@ static void _bluecherry_sync_task(void* args)
     esp_task_wdt_add(NULL);
   }
 
+  bool block = true;
+
   while(true) {
     _tickleWatchdog();
-    if(bluecherry_sync() == BLUECHERRY_SYNC_CONTINUE) {
-      continue;
+    if(bluecherry_sync(block) == BLUECHERRY_SYNC_CONTINUE) {
+      block = false;
+    } else {
+      block = true;
     }
-    vTaskDelay(pdMS_TO_TICKS(10000));
   }
 }
 
@@ -751,7 +754,7 @@ error:
   return ESP_FAIL;
 }
 
-esp_err_t bluecherry_sync()
+esp_err_t bluecherry_sync(bool blocking)
 {
   if(_bluecherry_opdata.state == BLUECHERRY_STATE_AWAIT_CONNECTION) {
     esp_err_t ret = bluecherry_connect();
@@ -766,8 +769,10 @@ esp_err_t bluecherry_sync()
     return ESP_ERR_INVALID_STATE;
   }
 
+  int blocktime = blocking ? BLUECHERRY_AUTO_SYNC_SECONDS : 0;
   _bluecherry_msg_t out_msg;
-  if(xQueuePeek(_bluecherry_opdata.out_queue, &out_msg, 0) == pdPASS) {
+  if(xQueuePeek(_bluecherry_opdata.out_queue, &out_msg, pdMS_TO_TICKS(blocktime * 1000)) ==
+     pdPASS) {
     if(_bluecherry_coap_rxtx(&out_msg) == ESP_OK) {
       if(xQueueReceive(_bluecherry_opdata.out_queue, &out_msg, 0) == pdPASS) {
         ESP_LOGD(TAG, "Synchronized messages with cloud");
