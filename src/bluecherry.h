@@ -328,7 +328,7 @@ typedef struct {
   /**
    * @brief Pointer to where the incoming OTA data should be saved.
    */
-  uint8_t otaBuffer[SPI_FLASH_BLOCK_SIZE];
+  uint8_t otaBuffer[SPI_FLASH_SEC_SIZE];
 
   /**
    * @brief The current position in the OTA buffer.
@@ -372,12 +372,15 @@ typedef struct {
  * @param msg_handler The handler used for incoming messages or NULL to ignore them.
  * @param msg_handler_args Optional user pointer which is passed to the message handler.
  * @param auto_sync When set to true, the library will atomatically perform syncs in the background.
+ * @param watchdog_timeout_seconds The timeout in seconds for the task watchdog. If not 0, your
+ * application should ensure that `esp_task_wdt_reset()` is repeatedly called within this time.
+ * Should be more than 30 seconds
  *
  * @return ESP_OK on success.
  */
 esp_err_t bluecherry_init(const char* device_cert, const char* device_key,
                           bluecherry_msg_handler_t msg_handler, void* msg_handler_args,
-                          bool auto_sync);
+                          bool auto_sync, uint16_t watchdog_timeout_seconds);
 
 /**
  * @brief Synchronize incoming and outgoing BlueCherry messages and perform OTA.

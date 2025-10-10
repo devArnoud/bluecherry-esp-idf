@@ -28,9 +28,39 @@ static _bluecherry_t _bluecherry_opdata = { 0 };
 /**
  * @brief The logging tag for this BlueCherry module.
  */
-static const char* TAG = "BlueCherry";
+static const char* TAG = "[BlueCherry]";
+
+static bool _watchdog = false;
+/**
+ * @brief Tickle the task watchdog if enabled.
+ *
+ * This function tickles the task watchdog if it is enabled.
+ */
+static void _tickleWatchdog(void)
+{
+  if(_watchdog) {
+    esp_task_wdt_reset();
+  }
+}
 
 #pragma region OTA
+
+/**
+ * @brief Get the current OTA progress.
+ *
+ * This function returns the current OTA progress. If no OTA is in progress, 0 is returned.
+ *
+ * @return The current OTA progress.
+ */
+static float blueCherryGetOtaProgressPercent(void)
+{
+  if(_bluecherry_opdata.otaSize == 0) {
+    return 0.0f;
+  }
+
+  return ((float) _bluecherry_opdata.otaProgress / (float) _bluecherry_opdata.otaSize) * 100.0f;
+}
+
 /**
  * @brief Process OTA init event
  *
@@ -178,8 +208,9 @@ static bool _processOtaChunkEvent(uint8_t* data, uint16_t len)
       ESP_LOGE(TAG, "OTA chunk: failed to write to flash (within loop)");
       return true;
     } else {
-      ESP_LOGD(TAG, "OTA chunk written to flash; progress = %lu / %lu",
-               _bluecherry_opdata.otaProgress, _bluecherry_opdata.otaSize);
+      ESP_LOGI(TAG, "OTA chunk written to flash; progress = %lu / %lu (%.2f%%)",
+               _bluecherry_opdata.otaProgress, _bluecherry_opdata.otaSize,
+               blueCherryGetOtaProgressPercent());
     }
 
     left -= toBuff;
@@ -194,8 +225,9 @@ static bool _processOtaChunkEvent(uint8_t* data, uint16_t len)
       ESP_LOGE(TAG, "OTA chunk: failed to write to flash (remainder)");
       return true;
     } else {
-      ESP_LOGD(TAG, "OTA remainder written to flash; progress = %lu / %lu",
-               _bluecherry_opdata.otaProgress, _bluecherry_opdata.otaSize);
+      ESP_LOGD(TAG, "OTA remainder written to flash; progress = %lu / %lu (%.2f%%)",
+               _bluecherry_opdata.otaProgress, _bluecherry_opdata.otaSize,
+               blueCherryGetOtaProgressPercent());
     }
   }
 
@@ -249,8 +281,6 @@ static bool _processOtaFinishEvent(void)
   return false;
 }
 
-#pragma endregion
-
 /**
  * @brief Process an incoming BlueCherry event.
  *
@@ -282,6 +312,8 @@ static bool _blueCherryProcessEvent(uint8_t* data, uint8_t len)
   return true;
 }
 
+#pragma endregion
+
 /**
  * @brief Read up to len bytes from the DTLS socket.
  *
@@ -305,7 +337,7 @@ static int _bluecherry_mbed_dtls_read(unsigned char* buf, size_t len)
     }
 
     if(ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
-      esp_task_wdt_reset();
+      _tickleWatchdog();
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
@@ -337,7 +369,7 @@ static int _bluecherry_mbed_dtls_write(const unsigned char* buf, size_t len)
   do {
     ret = mbedtls_ssl_write(&_bluecherry_opdata.ssl, buf, len);
     if(ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
-      esp_task_wdt_reset();
+      _tickleWatchdog();
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
@@ -391,6 +423,7 @@ static esp_err_t _bluecherry_coap_rxtx(_bluecherry_msg_t* msg)
 
   for(uint8_t attempt = 1; attempt <= BLUECHERRY_MAX_RETRANSMITS; ++attempt) {
     _bluecherry_opdata.last_tx_time = time(NULL);
+    _tickleWatchdog();
 
     if(_bluecherry_mbed_dtls_write(data, data_len) < 0) {
       return ESP_FAIL;
@@ -400,7 +433,7 @@ static esp_err_t _bluecherry_coap_rxtx(_bluecherry_msg_t* msg)
 
     while(true) {
       int ret = _bluecherry_mbed_dtls_read(_bluecherry_opdata.in_buf, BLUECHERRY_MAX_MESSAGE_LEN);
-      if(ret >= 0) {
+      if(ret > 0) {
         _bluecherry_opdata.in_buf_len = ret;
         _bluecherry_opdata.state = BLUECHERRY_STATE_CONNECTED_RECEIVED_ACK;
         return ESP_OK;
@@ -431,13 +464,13 @@ static esp_err_t _bluecherry_coap_rxtx(_bluecherry_msg_t* msg)
  */
 static void _bluecherry_sync_task(void* args)
 {
-  // esp_task_wdt_add(NULL);
+  if(_watchdog) {
+    esp_task_wdt_add(NULL);
+  }
 
   while(true) {
+    _tickleWatchdog();
     if(bluecherry_sync() == BLUECHERRY_SYNC_CONTINUE) {
-      if(esp_task_wdt_status(NULL) == ESP_OK) {
-        esp_task_wdt_reset();
-      }
       continue;
     }
     vTaskDelay(pdMS_TO_TICKS(10000));
@@ -453,12 +486,21 @@ static void _bluecherry_sync_task(void* args)
  * @param buf Pointer to the buffer containing the data to send.
  * @param len Length of the data to send, in bytes.
  *
- * @return The number of bytes sent on success, or -1 on error.
+ * @return The number of bytes sent on success, MBEDTLS error code on failure.
  */
 static int _bluecherry_dtls_send(void* ctx, const unsigned char* buf, size_t len)
 {
   int sock = *(int*) ctx;
-  return send(sock, buf, len, 0);
+  int ret = send(sock, buf, len, 0);
+
+  if(ret < 0) {
+    if(errno == EAGAIN || errno == EWOULDBLOCK) {
+      return MBEDTLS_ERR_SSL_WANT_WRITE;
+    }
+    return MBEDTLS_ERR_NET_SEND_FAILED;
+  }
+
+  return ret;
 }
 
 /**
@@ -470,12 +512,24 @@ static int _bluecherry_dtls_send(void* ctx, const unsigned char* buf, size_t len
  * @param buf Pointer to the buffer where the received data will be stored.
  * @param len Maximum number of bytes to read into the buffer.
  *
- * @return int Number of bytes received on success, 0 if the connection was closed, or -1 on error.
+ * @return int Number of bytes received on success, MBEDTLS error code on failure.
  */
 static int _bluecherry_dtls_recv(void* ctx, unsigned char* buf, size_t len)
 {
   int sock = *(int*) ctx;
-  return recv(sock, buf, len, 0);
+  int ret = recv(sock, buf, len, 0);
+
+  if(ret < 0) {
+    if(errno == EWOULDBLOCK || errno == EAGAIN) {
+      return MBEDTLS_ERR_SSL_WANT_READ;
+    }
+    if(errno == ETIMEDOUT) {
+      return MBEDTLS_ERR_SSL_TIMEOUT;
+    }
+    return MBEDTLS_ERR_NET_RECV_FAILED;
+  }
+
+  return ret;
 }
 
 static esp_err_t bluecherry_connect(void)
@@ -534,7 +588,7 @@ static esp_err_t bluecherry_connect(void)
         return ESP_ERR_TIMEOUT;
       }
 
-      esp_task_wdt_reset();
+      _tickleWatchdog();
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
@@ -550,7 +604,7 @@ static esp_err_t bluecherry_connect(void)
 
 esp_err_t bluecherry_init(const char* device_cert, const char* device_key,
                           bluecherry_msg_handler_t msg_handler, void* msg_handler_args,
-                          bool auto_sync)
+                          bool auto_sync, uint16_t watchdog_timeout_seconds)
 {
   if(_bluecherry_opdata.state != BLUECHERRY_STATE_UNINITIALIZED) {
     return ESP_OK;
@@ -652,6 +706,24 @@ esp_err_t bluecherry_init(const char* device_cert, const char* device_key,
     goto error;
   }
 
+  if(watchdog_timeout_seconds > 0) {
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 0, 0)
+    esp_task_wdt_init(watchdog_timeout_seconds, true);
+#else
+    esp_task_wdt_config_t twdt_config = { .timeout_ms =
+                                              (uint32_t) (watchdog_timeout_seconds * 1000UL),
+                                          .idle_core_mask = (1 << portNUM_PROCESSORS) - 1,
+                                          .trigger_panic = true };
+#if CONFIG_ESP_TASK_WDT_INIT
+    esp_task_wdt_reconfigure(&twdt_config);
+#else
+    esp_task_wdt_init(&twdt_config);
+#endif
+#endif
+    esp_task_wdt_add(NULL);
+    _watchdog = true;
+  }
+
   if(auto_sync) {
     BaseType_t ret = xTaskCreate(_bluecherry_sync_task, "bc_sync", 4096, NULL, BLUECHERRY_SP, NULL);
     if(ret != pdPASS) {
@@ -705,7 +777,7 @@ esp_err_t bluecherry_sync()
         return ESP_FAIL;
       }
     } else {
-      ESP_LOGE(TAG, "Could not sync with cloud");
+      ESP_LOGE(TAG, "Could not sync payload with cloud");
       _bluecherry_opdata.state = BLUECHERRY_STATE_AWAIT_CONNECTION;
       return ESP_ERR_NOT_FINISHED;
     }
