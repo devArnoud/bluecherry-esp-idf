@@ -1,9 +1,10 @@
 /**
  * @file main.c
- * @author Daan Pape (daan@dptechnics.com)
+ * @author Daan Pape <daan@dptechnics.com>
+ * @author Arnoud Devoogdt <arnoud@dptechnics.com>
  * @brief This code connects to the BlueCherry platform.
- * @version 0.1
- * @date 2025-07-14
+ * @version 1.3.0
+ * @date 2025-10-27
  * @copyright Copyright (c) 2025 DPTechnics BV
  *
  * This program is free software: you can redistribute it and/or modify
@@ -20,21 +21,26 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/lgpl-3.0.html>.
  */
 
-#include <stdio.h>
-#include <string.h>
-#include <inttypes.h>
-#include <esp_log.h>
-#include <sdkconfig.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_chip_info.h>
 #include <esp_system.h>
+#include <esp_event.h>
+#include <sdkconfig.h>
 #include <nvs_flash.h>
 #include <esp_wifi.h>
-#include <esp_event.h>
+#include <inttypes.h>
+#include <esp_log.h>
+#include <string.h>
+#include <stdio.h>
 
 #include "bluecherry.h"
 #include "credentials/wifi.h"
+
+/**
+ * @brief The BlueCherry device type for this application. Required for ZTP.
+ */
+#define BLUECHERRY_DEVICE_TYPE "walter01"
 
 /**
  * @brief The logging tag for this BlueCherry module.
@@ -313,15 +319,117 @@ static void bluecherry_msg_handler(uint8_t topic, uint16_t len, const uint8_t* d
 }
 
 /**
+ * @brief Write a string to NVS.
+ *
+ * This function writes a string value to NVS under the specified key.
+ *
+ * @param key The key under which to store the string.
+ * @param value The string value to store.
+ *
+ * @return ESP_OK on success.
+ */
+esp_err_t nvs_write_str(const char* key, const char* value)
+{
+  nvs_handle_t handle;
+  ESP_ERROR_CHECK(nvs_open("bcztp_store", NVS_READWRITE, &handle));
+  ESP_ERROR_CHECK(nvs_set_str(handle, key, value));
+  ESP_ERROR_CHECK(nvs_commit(handle));
+  nvs_close(handle);
+  return ESP_OK;
+}
+
+/**
+ * @brief Read a string from NVS.
+ *
+ * This function reads a string value from NVS under the specified key.
+ *
+ * @param key The key under which the string is stored.
+ * @param buf The buffer to store the read string.
+ * @param len The length of the buffer.
+ *
+ * @return ESP_OK on success.
+ */
+esp_err_t nvs_read_str(const char* key, char* buf, size_t len)
+{
+  nvs_handle_t handle;
+  esp_err_t err = nvs_open("bcztp_store", NVS_READONLY, &handle);
+  if(err != ESP_OK)
+    return err;
+
+  err = nvs_get_str(handle, key, buf, &len);
+  nvs_close(handle);
+  return err;
+}
+
+/**
+ * @brief Callback implementation for BlueCherry ZTP BIO handler.
+ *
+ * @param read True when reading, false when writing.
+ * @param secure True when handling the private key, false when handling the certificate.
+ * @param args Optional user arguments, key or certificate passed as arguments when writing.
+ *
+ * @return The certificate or key when reading, NULL when writing.
+ */
+static const char* bluecherry_ztp_bio_handler(bool read, bool secure, void* args)
+{
+  static char devcert[4096];
+  static char devkey[4096];
+
+  const char* keyname = secure ? "bcztp_key" : "bcztp_cert";
+
+  if(read) {
+    esp_err_t err =
+        nvs_read_str(keyname, secure ? devkey : devcert, secure ? sizeof(devkey) : sizeof(devcert));
+    if(err != ESP_OK) {
+      ESP_LOGW(TAG, "No %s found in NVS (err=0x%x)", keyname, err);
+      return NULL;
+    }
+    return secure ? devkey : devcert;
+  } else {
+    const char* data = (const char*) args;
+
+    nvs_handle_t handle;
+    ESP_ERROR_CHECK(nvs_open("bcztp_store", NVS_READWRITE, &handle));
+
+    if(data == NULL) {
+      ESP_LOGW(TAG, "Erasing %s from NVS", keyname);
+      nvs_erase_key(handle, keyname);
+      nvs_commit(handle);
+      nvs_close(handle);
+      return NULL;
+    }
+
+    ESP_ERROR_CHECK(nvs_set_str(handle, keyname, data));
+    ESP_ERROR_CHECK(nvs_commit(handle));
+    nvs_close(handle);
+
+    ESP_LOGI(TAG, "Stored %s in NVS", keyname);
+    return data;
+  }
+}
+
+/**
  * @brief The main application entrypoint.
  */
 void app_main(void)
 {
-  ESP_LOGI(TAG, "BlueCherry example V1.2.0");
+  ESP_LOGI(TAG, "BlueCherry example V1.3.0");
 
   ESP_ERROR_CHECK(nvs_init());
   ESP_ERROR_CHECK(wifi_init(WIFI_SSID, WIFI_PASSWORD, WIFI_AUTH_MODE));
-  ESP_ERROR_CHECK(bluecherry_init(devcert, devkey, bluecherry_msg_handler, NULL, true, 30));
+
+  /* Initialize bluecherry with pre-provisioned keys */
+  // while (!bluecherry_init(devcert, devkey, bluecherry_msg_handler, NULL, true, 30)) {
+  //   ESP_LOGI(TAG, "Waiting for Initial bluecherry connection...");
+  //   vTaskDelay(pdMS_TO_TICKS(5000));
+  // }
+
+  /* Initialize bluecherry with zero-touch provisioning */
+  while(bluecherry_init_ztp(bluecherry_ztp_bio_handler, NULL, BLUECHERRY_DEVICE_TYPE,
+                            bluecherry_msg_handler, NULL, true, 30) != ESP_OK) {
+    ESP_LOGI(TAG, "Waiting for Initial bluecherry connection...");
+    vTaskDelay(pdMS_TO_TICKS(5000));
+  }
 
   while(true) {
     ESP_LOGI(TAG, "Publishing message");

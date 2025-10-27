@@ -1,9 +1,11 @@
 /**
  * @file bluecherry.c
- * @author Daan Pape (daan@dptechnics.com)
+ * @author Daan Pape <daan@dptechnics.com>
+ * @author Thibo Verheyde <thibo@dptechnics.com>
+ * @author Arnoud Devoogdt <arnoud@dptechnics.com>
  * @brief This code connects to the BlueCherry platform.
- * @version 1.2.0
- * @date 2025-07-25
+ * @version 1.3.0
+ * @date 2025-10-27
  * @copyright Copyright (c) 2025 DPTechnics BV
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
@@ -30,7 +32,78 @@ static _bluecherry_t _bluecherry_opdata = { 0 };
  */
 static const char* TAG = "[BlueCherry]";
 
+/**
+ * @brief The hostname of the BlueCherry cloud.
+ */
+static const char* BLUECHERRY_HOST = "coap.bluecherry.io";
+
+/**
+ * @brief The port of the BlueCherry cloud.
+ */
+static const char* BLUECHERRY_PORT = "5684";
+
+/**
+ * @brief The port of the BlueCherry ZTP server.
+ */
+static const char* BLUECHERRY_ZTP_PORT = "5688";
+
+/**
+ * @brief The buffer used to store a private key.
+ */
+static char ztp_pkeyBuf[BLUECHERRY_ZTP_PKEY_BUF_SIZE];
+
+/**
+ * @brief The buffer used to store a certificate.
+ */
+static char ztp_certBuf[BLUECHERRY_ZTP_CERT_BUF_SIZE];
+
+/**
+ * @brief The BlueCherry device ID received from the server.
+ */
+static char ztp_bcDevId[BLUECHERRY_ZTP_ID_LEN + 1];
+
+/**
+ * @brief The size of the buffer used for the CSR subject.
+ */
+static char ztp_subjBuf[BLUECHERRY_ZTP_SUBJ_BUF_SIZE];
+
+/**
+ * @brief The BlueCherry type ID associated with this firmware.
+ */
+static const char* bcTypeId;
+
+/**
+ * @brief The BlueCherry CA root + intermediate certificate used for CoAP DTLS
+ * communication.
+ */
+static const char* BLUECHERRY_CA = "-----BEGIN CERTIFICATE-----\r\n\
+MIIBlTCCATqgAwIBAgICEAAwCgYIKoZIzj0EAwMwGjELMAkGA1UEBhMCQkUxCzAJ\r\n\
+BgNVBAMMAmNhMB4XDTI0MDMyNDEzMzM1NFoXDTQ0MDQwODEzMzM1NFowJDELMAkG\r\n\
+A1UEBhMCQkUxFTATBgNVBAMMDGludGVybWVkaWF0ZTBZMBMGByqGSM49AgEGCCqG\r\n\
+SM49AwEHA0IABJGFt28UrHlbPZEjzf4CbkvRaIjxDRGoeHIy5ynfbOHJ5xgBl4XX\r\n\
+hp/r8zOBLqSbu6iXGwgjp+wZJe1GCDi6D1KjZjBkMB0GA1UdDgQWBBR/rtuEomoy\r\n\
+49ovMAnj5Hpmk2gTGjAfBgNVHSMEGDAWgBR3Vw0Y1sUvMhkX7xySsX55tvsu8TAS\r\n\
+BgNVHRMBAf8ECDAGAQH/AgEAMA4GA1UdDwEB/wQEAwIBhjAKBggqhkjOPQQDAwNJ\r\n\
+ADBGAiEApN7DmuufC/aqyt6g2Y8qOWg6AXFUyTcub8/Y28XY3KgCIQCs2VUXCPwn\r\n\
+k8jR22wsqNvZfbndpHthtnPqI5+yFXrY4A==\r\n\
+-----END CERTIFICATE-----\r\n\
+-----BEGIN CERTIFICATE-----\r\n\
+MIIBmDCCAT+gAwIBAgIUDjfXeosg0fphnshZoXgQez0vO5UwCgYIKoZIzj0EAwMw\r\n\
+GjELMAkGA1UEBhMCQkUxCzAJBgNVBAMMAmNhMB4XDTI0MDMyMzE3MzU1MloXDTQ0\r\n\
+MDQwNzE3MzU1MlowGjELMAkGA1UEBhMCQkUxCzAJBgNVBAMMAmNhMFkwEwYHKoZI\r\n\
+zj0CAQYIKoZIzj0DAQcDQgAEB00rHNthOOYyKj80cd/DHQRBGSbJmIRW7rZBNA6g\r\n\
+fbEUrY9NbuhGS6zKo3K59zYc5R1U4oBM3bj6Q7LJfTu7JqNjMGEwHQYDVR0OBBYE\r\n\
+FHdXDRjWxS8yGRfvHJKxfnm2+y7xMB8GA1UdIwQYMBaAFHdXDRjWxS8yGRfvHJKx\r\n\
+fnm2+y7xMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgGGMAoGCCqGSM49\r\n\
+BAMDA0cAMEQCID7AcgACnXWzZDLYEainxVDxEJTUJFBhcItO77gcHPZUAiAu/ZMO\r\n\
+VYg4UI2D74WfVxn+NyVd2/aXTvSBp8VgyV3odA==\r\n\
+-----END CERTIFICATE-----\r\n";
+
+/**
+ * @brief Whether the task watchdog is enabled.
+ */
 static bool _watchdog = false;
+
 /**
  * @brief Tickle the task watchdog if enabled.
  *
@@ -43,7 +116,34 @@ static void _tickleWatchdog(void)
   }
 }
 
-#pragma region OTA
+/**
+ * @brief The entrypoint of the automatic BlueCherry synchronisation task.
+ *
+ * This function implements the automatic BlueCherry syncronisation.
+ *
+ * @param args A NULL pointer.
+ *
+ * @return None.
+ */
+static void _bluecherry_sync_task(void* args)
+{
+  if(_watchdog) {
+    esp_task_wdt_add(NULL);
+  }
+
+  bool block = true;
+
+  while(true) {
+    _tickleWatchdog();
+    if(bluecherry_sync(block) == BLUECHERRY_SYNC_CONTINUE) {
+      block = false;
+    } else {
+      block = true;
+    }
+  }
+}
+
+#pragma region OTA FUNCTIONS
 
 /**
  * @brief Get the current OTA progress.
@@ -313,6 +413,64 @@ static bool _blueCherryProcessEvent(uint8_t* data, uint8_t len)
 }
 
 #pragma endregion
+#pragma region MBEDTLS NET SOCKET CALLBACKS
+/**
+ * @brief Send DTLS data over a socket.
+ *
+ * This function is called by Mbed TLS to send encrypted data over the underlying socket.
+ *
+ * @param ctx Pointer to the socket descriptor.
+ * @param buf Pointer to the buffer containing the data to send.
+ * @param len Length of the data to send, in bytes.
+ *
+ * @return The number of bytes sent on success, MBEDTLS error code on failure.
+ */
+static int _bluecherry_dtls_send(void* ctx, const unsigned char* buf, size_t len)
+{
+  int sock = *(int*) ctx;
+  int ret = send(sock, buf, len, 0);
+
+  if(ret < 0) {
+    if(errno == EAGAIN || errno == EWOULDBLOCK) {
+      return MBEDTLS_ERR_SSL_WANT_WRITE;
+    }
+    return MBEDTLS_ERR_NET_SEND_FAILED;
+  }
+
+  return ret;
+}
+
+/**
+ * @brief Receive DTLS data from a socket.
+ *
+ * This function is called by Mbed TLS when a read is required from the underlying socket.
+ *
+ * @param ctx Pointer to the socket descriptor.
+ * @param buf Pointer to the buffer where the received data will be stored.
+ * @param len Maximum number of bytes to read into the buffer.
+ *
+ * @return int Number of bytes received on success, MBEDTLS error code on failure.
+ */
+static int _bluecherry_dtls_recv(void* ctx, unsigned char* buf, size_t len)
+{
+  int sock = *(int*) ctx;
+  int ret = recv(sock, buf, len, 0);
+
+  if(ret < 0) {
+    if(errno == EWOULDBLOCK || errno == EAGAIN) {
+      return MBEDTLS_ERR_SSL_WANT_READ;
+    }
+    if(errno == ETIMEDOUT) {
+      return MBEDTLS_ERR_SSL_TIMEOUT;
+    }
+    return MBEDTLS_ERR_NET_RECV_FAILED;
+  }
+
+  return ret;
+}
+
+#pragma endregion
+#pragma region MBEDTLS NET SOCKET
 
 /**
  * @brief Read up to len bytes from the DTLS socket.
@@ -384,6 +542,262 @@ static int _bluecherry_mbed_dtls_write(const unsigned char* buf, size_t len)
 }
 
 /**
+ * @brief Finalize the CSR generation process.
+ *
+ * This function cleans up the resources used during the CSR generation process.
+ *
+ * @param result The result of the CSR generation process.
+ *
+ * @return true if the cleanup was successful, false otherwise.
+ */
+static bool _ztp_finish_csr_gen(bool result)
+{
+  mbedtls_pk_free(&_bluecherry_opdata.devkey);
+  mbedtls_entropy_free(&_bluecherry_opdata.entropy);
+  mbedtls_ctr_drbg_free(&_bluecherry_opdata.ctr_drbg);
+  mbedtls_x509write_csr_free(&_bluecherry_opdata.ztp_mbCsr);
+
+  if(!result) {
+    ztp_pkeyBuf[0] = '\0';
+    ztp_certBuf[0] = '\0';
+  }
+
+  return result;
+}
+
+/**
+ * @brief Cleanup the Mbed TLS resources.
+ *
+ * This function cleans up the Mbed TLS resources used by the BlueCherry connection.
+ *
+ * @return None.
+ */
+static void _bluecherry_cleanup_mbedtls()
+{
+  mbedtls_ssl_free(&_bluecherry_opdata.ssl);
+  mbedtls_ssl_config_free(&_bluecherry_opdata.ssl_conf);
+  mbedtls_ctr_drbg_free(&_bluecherry_opdata.ctr_drbg);
+  mbedtls_entropy_free(&_bluecherry_opdata.entropy);
+  mbedtls_x509_crt_free(&_bluecherry_opdata.cacert);
+  mbedtls_x509_crt_free(&_bluecherry_opdata.devcert);
+  mbedtls_pk_free(&_bluecherry_opdata.devkey);
+}
+
+/**
+ * @brief Cleanup the network resources.
+ *
+ * This function cleans up the network resources used by the BlueCherry connection.
+ *
+ * @return None.
+ */
+static void _bluecherry_cleanup_network()
+{
+  if(_bluecherry_opdata.sock > 0) {
+    shutdown(_bluecherry_opdata.sock, 0);
+    close(_bluecherry_opdata.sock);
+    _bluecherry_opdata.sock = -1;
+  }
+}
+
+/**
+ * @brief Cleanup the current DTLS session (socket + SSL context only).
+ *
+ * This function closes the current socket and frees the SSL session state,
+ * without touching RNG, entropy, certificates, or SSL config.
+ *
+ * @return None.
+ */
+static void _bluecherry_cleanup_session()
+{
+  _bluecherry_cleanup_network();
+  mbedtls_ssl_free(&_bluecherry_opdata.ssl);
+  mbedtls_ssl_init(&_bluecherry_opdata.ssl);
+}
+
+/**
+ * @brief Setup the Mbed TLS resources.
+ *
+ * This function sets up the Mbed TLS resources used by the BlueCherry connection.
+ *
+ * @param mac Pointer to the MAC address used for seeding the RNG.
+ *
+ * @return true if the setup was successful, false otherwise.
+ */
+static bool _bluecherry_setup_mbedtls(const uint8_t* mac)
+{
+  mbedtls_ssl_init(&_bluecherry_opdata.ssl);
+  mbedtls_ssl_config_init(&_bluecherry_opdata.ssl_conf);
+  mbedtls_ctr_drbg_init(&_bluecherry_opdata.ctr_drbg);
+  mbedtls_entropy_init(&_bluecherry_opdata.entropy);
+  mbedtls_x509_crt_init(&_bluecherry_opdata.cacert);
+  mbedtls_x509_crt_init(&_bluecherry_opdata.devcert);
+  mbedtls_pk_init(&_bluecherry_opdata.devkey);
+  _bluecherry_opdata.sock = -1;
+
+  int ret = mbedtls_ctr_drbg_seed(&_bluecherry_opdata.ctr_drbg, mbedtls_entropy_func,
+                                  &_bluecherry_opdata.entropy, mac, 6);
+  if(ret != 0) {
+    ESP_LOGE(TAG, "Could not seed RNG: -%04X", -ret);
+    return false;
+  }
+
+  ret = mbedtls_ssl_config_defaults(&_bluecherry_opdata.ssl_conf, MBEDTLS_SSL_IS_CLIENT,
+                                    MBEDTLS_SSL_TRANSPORT_DATAGRAM, MBEDTLS_SSL_PRESET_DEFAULT);
+  if(ret != 0) {
+    ESP_LOGE(TAG, "Could not configure DTLS defaults: -%04X", -ret);
+    return false;
+  }
+
+  mbedtls_ssl_conf_read_timeout(&_bluecherry_opdata.ssl_conf, BLUECHERRY_SSL_READ_TIMEOUT);
+  mbedtls_ssl_conf_authmode(&_bluecherry_opdata.ssl_conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+  mbedtls_ssl_conf_rng(&_bluecherry_opdata.ssl_conf, mbedtls_ctr_drbg_random,
+                       &_bluecherry_opdata.ctr_drbg);
+  return true;
+}
+
+/**
+ * @brief Configure the Mbed TLS credentials.
+ *
+ * This function configures the Mbed TLS credentials used by the BlueCherry connection.
+ *
+ * @param caCert Pointer to the CA certificate in PEM format.
+ * @param devCert Pointer to the device certificate in PEM format, or NULL if not used.
+ * @param devKey Pointer to the device private key in PEM format, or NULL if not used.
+ *
+ * @return true if the configuration was successful, false otherwise.
+ */
+static bool _bluecherry_configure_credentials(const char* caCert, const char* devCert,
+                                              const char* devKey)
+{
+  int ret = mbedtls_x509_crt_parse(&_bluecherry_opdata.cacert, (const uint8_t*) caCert,
+                                   strlen(caCert) + 1);
+  if(ret != 0) {
+    ESP_LOGE(TAG, "Could not parse CA certificate: -%04X", -ret);
+    return false;
+  }
+
+  if(devCert && devKey) {
+    ret = mbedtls_x509_crt_parse(&_bluecherry_opdata.devcert, (const uint8_t*) devCert,
+                                 strlen(devCert) + 1);
+    if(ret != 0) {
+      ESP_LOGE(TAG, "Could not parse device certificate: -%04X", -ret);
+      return false;
+    }
+
+    ret = mbedtls_pk_parse_key(&_bluecherry_opdata.devkey, (const uint8_t*) devKey,
+                               strlen(devKey) + 1, NULL, 0, mbedtls_entropy_func,
+                               &_bluecherry_opdata.ctr_drbg);
+    if(ret != 0) {
+      ESP_LOGE(TAG, "Could not parse device key: -%04X", -ret);
+      return false;
+    }
+
+    ret = mbedtls_ssl_conf_own_cert(&_bluecherry_opdata.ssl_conf, &_bluecherry_opdata.devcert,
+                                    &_bluecherry_opdata.devkey);
+    if(ret != 0) {
+      ESP_LOGE(TAG, "Could not configure device cert/key in context: -%04X", -ret);
+      return false;
+    }
+  }
+
+  mbedtls_ssl_conf_ca_chain(&_bluecherry_opdata.ssl_conf, &_bluecherry_opdata.cacert, NULL);
+  return true;
+}
+
+/**
+ * @brief Connect to the BlueCherry DTLS server.
+ *
+ * This function connects to the BlueCherry DTLS server using the provided host and port.
+ *
+ * @param host The hostname or IP address of the BlueCherry server.
+ * @param port The port number of the BlueCherry server.
+ *
+ * @return true if the connection was successful, false otherwise.
+ */
+static bool _bluecherry_dtls_connect(const char* host, const char* port)
+{
+  bool success = false;
+  struct addrinfo hints = { 0 };
+  struct addrinfo* res = NULL;
+  int ret;
+
+  _bluecherry_cleanup_session();
+
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_DGRAM;
+
+  ret = getaddrinfo(host, port, &hints, &res);
+  if(ret != 0 || res == NULL) {
+    ESP_LOGE(TAG, "DNS lookup failed: %d", ret);
+    goto cleanup;
+  }
+
+  _bluecherry_opdata.sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+  if(_bluecherry_opdata.sock < 0) {
+    ESP_LOGE(TAG, "socket() failed: %s", strerror(errno));
+    goto cleanup;
+  }
+
+  struct timeval timeout = { .tv_sec = 3, .tv_usec = 0 };
+  setsockopt(_bluecherry_opdata.sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+  ret = connect(_bluecherry_opdata.sock, res->ai_addr, res->ai_addrlen);
+  if(ret != 0) {
+    ESP_LOGE(TAG, "connect() failed: %s", strerror(errno));
+    goto cleanup;
+  }
+
+  ret = mbedtls_ssl_setup(&_bluecherry_opdata.ssl, &_bluecherry_opdata.ssl_conf);
+  if(ret != 0) {
+    ESP_LOGE(TAG, "Could not setup SSL context: -%04X", -ret);
+    goto cleanup;
+  }
+
+  mbedtls_ssl_set_timer_cb(&_bluecherry_opdata.ssl, &_bluecherry_opdata.timer,
+                           mbedtls_timing_set_delay, mbedtls_timing_get_delay);
+
+  ret = mbedtls_ssl_set_hostname(&_bluecherry_opdata.ssl, host);
+  if(ret != 0) {
+    ESP_LOGE(TAG, "Could not set hostname: -%04X", -ret);
+    goto cleanup;
+  }
+
+  mbedtls_ssl_set_bio(&_bluecherry_opdata.ssl, &_bluecherry_opdata.sock, _bluecherry_dtls_send,
+                      _bluecherry_dtls_recv, NULL);
+
+  {
+    time_t start = time(NULL);
+    while((ret = mbedtls_ssl_handshake(&_bluecherry_opdata.ssl)) != 0) {
+      if(ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE ||
+         ret == MBEDTLS_ERR_SSL_TIMEOUT) {
+        if(difftime(time(NULL), start) >= 30) {
+          ESP_LOGE(TAG, "DTLS handshake timeout");
+          goto cleanup;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+        continue;
+      }
+      ESP_LOGE(TAG, "DTLS handshake failed: -%04X", -ret);
+      goto cleanup;
+    }
+  }
+
+  success = true;
+
+cleanup:
+  if(res)
+    freeaddrinfo(res);
+
+  if(!success)
+    _bluecherry_cleanup_session();
+
+  return success;
+}
+
+#pragma endregion
+#pragma region CoAP RXTX
+
+/**
  * @brief Perform CoAP transmit and receive operations with the BlueCherry cloud.
  *
  * This function will calculate and add the correct CoAP header to the message buffer and transmit
@@ -404,6 +818,11 @@ static esp_err_t _bluecherry_coap_rxtx(_bluecherry_msg_t* msg)
   if(data_len < BLUECHERRY_COAP_HEADER_SIZE) {
     ESP_LOGE(TAG, "Cannot send CoAP message smaller than %dB", BLUECHERRY_COAP_HEADER_SIZE);
     return ESP_ERR_NO_MEM;
+  }
+
+  _bluecherry_opdata.cur_message_id += 1;
+  if(_bluecherry_opdata.cur_message_id == 0) {
+    _bluecherry_opdata.cur_message_id = 1;
   }
 
   int32_t last_acked_message_id = _bluecherry_opdata.last_acked_message_id;
@@ -454,164 +873,713 @@ static esp_err_t _bluecherry_coap_rxtx(_bluecherry_msg_t* msg)
 }
 
 /**
- * @brief The entrypoint of the automatic BlueCherry synchronisation task.
+ * @brief Common CoAP transmit and receive function for ZTP operations.
  *
- * This function implements the automatic BlueCherry syncronisation.
+ * This function handles the common logic for transmitting and receiving CoAP messages
+ * during the Zero Touch Provisioning (ZTP) process. It constructs the CoAP message with
+ * the provided header and payload, sends it over the DTLS connection, and waits for
+ * a response.
  *
- * @param args A NULL pointer.
+ * @param tx_buf Pointer to the buffer containing the payload to transmit.
+ * @param tx_len Length of the payload to transmit.
+ * @param rx_buf Pointer to the buffer where the received data will be stored.
+ * @param rx_len Pointer to a variable where the length of the received data will be stored.
+ * @param header Pointer to the CoAP header to be used for the message.
+ * @param header_len Length of the CoAP header.
  *
- * @return None.
+ * @return true if the transmission and reception were successful, false otherwise.
  */
-static void _bluecherry_sync_task(void* args)
+static bool _bluecherry_ztp_coap_rxtx_common(uint8_t* tx_buf, uint16_t tx_len, uint8_t* rx_buf,
+                                             uint16_t* rx_len, const uint8_t* header,
+                                             size_t header_len)
 {
-  if(_watchdog) {
-    esp_task_wdt_add(NULL);
+  static time_t last_tx_time = 0;
+
+  _bluecherry_opdata.cur_message_id += 1;
+  if(_bluecherry_opdata.cur_message_id == 0) {
+    _bluecherry_opdata.cur_message_id = 1;
   }
 
-  bool block = true;
+  size_t data_len = header_len;
+  uint8_t data[header_len + 1 + tx_len];
 
-  while(true) {
+  memcpy(data, header, header_len);
+
+  if(tx_len > 0) {
+    data[header_len] = 0xFF;
+    memcpy(data + header_len + 1, tx_buf, tx_len);
+    data_len = header_len + 1 + tx_len;
+  }
+
+  double timeout = 2.0 * (1 + (rand() / (RAND_MAX + 1.0)) * (1.5 - 1));
+
+  for(uint8_t attempt = 1; attempt <= 4; ++attempt) {
+    last_tx_time = time(NULL);
     _tickleWatchdog();
-    if(bluecherry_sync(block) == BLUECHERRY_SYNC_CONTINUE) {
-      block = false;
-    } else {
-      block = true;
-    }
-  }
-}
 
-/**
- * @brief Send DTLS data over a socket.
- *
- * This function is called by Mbed TLS to send encrypted data over the underlying socket.
- *
- * @param ctx Pointer to the socket descriptor.
- * @param buf Pointer to the buffer containing the data to send.
- * @param len Length of the data to send, in bytes.
- *
- * @return The number of bytes sent on success, MBEDTLS error code on failure.
- */
-static int _bluecherry_dtls_send(void* ctx, const unsigned char* buf, size_t len)
-{
-  int sock = *(int*) ctx;
-  int ret = send(sock, buf, len, 0);
+    if(_bluecherry_mbed_dtls_write(data, data_len) < 0)
+      return false;
 
-  if(ret < 0) {
-    if(errno == EAGAIN || errno == EWOULDBLOCK) {
-      return MBEDTLS_ERR_SSL_WANT_WRITE;
-    }
-    return MBEDTLS_ERR_NET_SEND_FAILED;
-  }
+    while(true) {
+      uint8_t temp_buf[1024];
+      int ret = _bluecherry_mbed_dtls_read(temp_buf, sizeof(temp_buf));
 
-  return ret;
-}
-
-/**
- * @brief Receive DTLS data from a socket.
- *
- * This function is called by Mbed TLS when a read is required from the underlying socket.
- *
- * @param ctx Pointer to the socket descriptor.
- * @param buf Pointer to the buffer where the received data will be stored.
- * @param len Maximum number of bytes to read into the buffer.
- *
- * @return int Number of bytes received on success, MBEDTLS error code on failure.
- */
-static int _bluecherry_dtls_recv(void* ctx, unsigned char* buf, size_t len)
-{
-  int sock = *(int*) ctx;
-  int ret = recv(sock, buf, len, 0);
-
-  if(ret < 0) {
-    if(errno == EWOULDBLOCK || errno == EAGAIN) {
-      return MBEDTLS_ERR_SSL_WANT_READ;
-    }
-    if(errno == ETIMEDOUT) {
-      return MBEDTLS_ERR_SSL_TIMEOUT;
-    }
-    return MBEDTLS_ERR_NET_RECV_FAILED;
-  }
-
-  return ret;
-}
-
-static esp_err_t bluecherry_connect(void)
-{
-  int ret;
-
-  if(_bluecherry_opdata.sock >= 0) {
-    shutdown(_bluecherry_opdata.sock, 0);
-    close(_bluecherry_opdata.sock);
-    _bluecherry_opdata.sock = -1;
-  }
-
-  struct addrinfo hints = { 0 };
-  hints.ai_family = AF_INET;
-  hints.ai_socktype = SOCK_DGRAM;
-  struct addrinfo* res = NULL;
-  ret = getaddrinfo(BLUECHERRY_HOST, BLUECHERRY_PORT, &hints, &res);
-  if(ret != 0 || res == NULL) {
-    ESP_LOGE(TAG, "DNS lookup failed: %d", ret);
-    if(res)
-      freeaddrinfo(res);
-    return ESP_FAIL;
-  }
-
-  _bluecherry_opdata.sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-  if(_bluecherry_opdata.sock < 0) {
-    ESP_LOGE(TAG, "socket() failed: %s", strerror(errno));
-    freeaddrinfo(res);
-    return ESP_FAIL;
-  }
-
-  struct timeval timeout;
-  timeout.tv_sec = 3;
-  timeout.tv_usec = 0;
-  setsockopt(_bluecherry_opdata.sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-
-  if(connect(_bluecherry_opdata.sock, res->ai_addr, res->ai_addrlen) != 0) {
-    ESP_LOGE(TAG, "connect() failed: %s", strerror(errno));
-    close(_bluecherry_opdata.sock);
-    _bluecherry_opdata.sock = -1;
-    freeaddrinfo(res);
-    return ESP_FAIL;
-  }
-  freeaddrinfo(res);
-
-  mbedtls_ssl_session_reset(&_bluecherry_opdata.ssl);
-  mbedtls_ssl_set_bio(&_bluecherry_opdata.ssl, &_bluecherry_opdata.sock, _bluecherry_dtls_send,
-                      _bluecherry_dtls_recv, NULL);
-
-  time_t t_start = time(NULL);
-  while((ret = mbedtls_ssl_handshake(&_bluecherry_opdata.ssl)) != 0) {
-    if(ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE ||
-       ret == MBEDTLS_ERR_SSL_TIMEOUT) {
-      if(difftime(time(NULL), t_start) >= SSL_HANDSHAKE_TIMEOUT_SEC) {
-        ESP_LOGE(TAG, "DTLS handshake timed out");
-        return ESP_ERR_TIMEOUT;
+      if(ret > 0) {
+        if(ret > 7) {
+          memcpy(rx_buf, temp_buf + 7, ret - 7);
+          *rx_len = (uint16_t) (ret - 7);
+        } else {
+          *rx_len = 0;
+        }
+        return true;
+      } else if(ret != MBEDTLS_ERR_SSL_TIMEOUT) {
+        return false;
       }
 
-      _tickleWatchdog();
-      vTaskDelay(pdMS_TO_TICKS(10));
-      continue;
+      if(difftime(time(NULL), last_tx_time) >= timeout)
+        break;
     }
 
-    ESP_LOGE(TAG, "DTLS handshake failed: -0x%04X", -ret);
-    return ESP_FAIL;
+    timeout *= 2;
   }
 
-  _bluecherry_opdata.state = BLUECHERRY_STATE_CONNECTED_IDLE;
-
-  return ESP_OK;
+  return false;
 }
+
+/**
+ * @brief CoAP transmit and receive function for requesting device ID.
+ *
+ * This function constructs and sends a CoAP message to request the device ID
+ * from the BlueCherry cloud server. It uses a predefined CoAP header for the
+ * device ID request and handles the transmission and reception of the message.
+ *
+ * @param tx_buf Pointer to the buffer containing the payload to transmit.
+ * @param tx_len Length of the payload to transmit.
+ * @param rx_buf Pointer to the buffer where the received data will be stored.
+ * @param rx_len Pointer to a variable where the length of the received data will be stored.
+ *
+ * @return true if the transmission and reception were successful, false otherwise.
+ */
+static bool _bluecherry_ztp_coap_rxtx_devid(uint8_t* tx_buf, uint16_t tx_len, uint8_t* rx_buf,
+                                            uint16_t* rx_len)
+{
+  const uint8_t header[] = { 0x40,
+                             0x01,
+                             _bluecherry_opdata.cur_message_id >> 8,
+                             _bluecherry_opdata.cur_message_id & 0xFF,
+                             0xB2,
+                             0x76,
+                             0x31,
+                             0x05,
+                             0x64,
+                             0x65,
+                             0x76,
+                             0x69,
+                             0x64 };
+
+  return _bluecherry_ztp_coap_rxtx_common(tx_buf, tx_len, rx_buf, rx_len, header, sizeof(header));
+}
+
+/**
+ * @brief CoAP transmit and receive function for signing operations.
+ *
+ * This function constructs and sends a CoAP message to perform signing operations
+ * with the BlueCherry cloud server. It uses a predefined CoAP header for the
+ * signing request and handles the transmission and reception of the message.
+ *
+ * @param tx_buf Pointer to the buffer containing the payload to transmit.
+ * @param tx_len Length of the payload to transmit.
+ * @param rx_buf Pointer to the buffer where the received data will be stored.
+ * @param rx_len Pointer to a variable where the length of the received data will be stored.
+ *
+ * @return true if the transmission and reception were successful, false otherwise.
+ */
+static bool _bluecherry_ztp_coap_rxtx_sign(uint8_t* tx_buf, uint16_t tx_len, uint8_t* rx_buf,
+                                           uint16_t* rx_len)
+{
+  const uint8_t header[] = { 0x40,
+                             0x01,
+                             _bluecherry_opdata.cur_message_id >> 8,
+                             _bluecherry_opdata.cur_message_id & 0xFF,
+                             0xB2,
+                             0x76,
+                             0x31,
+                             0x04,
+                             0x73,
+                             0x69,
+                             0x67,
+                             0x6E };
+
+  return _bluecherry_ztp_coap_rxtx_common(tx_buf, tx_len, rx_buf, rx_len, header, sizeof(header));
+}
+
+#pragma endregion
+#pragma region ZTP
+
+/**
+ * @brief Initializes the CBOR context.
+ *
+ * @param cbor CBOR context to initialize.
+ * @param buffer Output buffer to use.
+ * @param capacity Maximum size of the buffer.
+ *
+ * @return 0 on success, non-zero on failure.
+ */
+static int _ztp_cbor_init(_ztp_cbor_t* cbor, uint8_t* buffer, size_t capacity)
+{
+  if(buffer == NULL || capacity == 0) {
+    return -1;
+  }
+
+  cbor->buffer = buffer;
+  cbor->capacity = capacity;
+  cbor->position = 0;
+
+  return 0;
+}
+
+/**
+ * @brief Returns the size of encoded data.
+ *
+ * @param cbor CBOR context.
+ *
+ * @return Size of encoded data.
+ */
+static size_t _ztp_cbor_size(const _ztp_cbor_t* cbor)
+{
+  return cbor->position;
+}
+
+/**
+ * @brief Writes a single byte to the CBOR buffer.
+ *
+ * @param cbor CBOR context.
+ * @param byte Byte to write.
+ *
+ * @return 0 on success, non-zero on failure.
+ */
+static int _ztp_cbor_write_byte(_ztp_cbor_t* cbor, uint8_t byte)
+{
+  if(cbor->position < cbor->capacity) {
+    cbor->buffer[cbor->position++] = byte;
+    return 0; // Success
+  }
+  return -1; // Buffer overflow
+}
+
+/**
+ * @brief Writes a byte array to the CBOR buffer.
+ *
+ * @param cbor CBOR context.
+ * @param data Data to write.
+ * @param length Length of data to write.
+ *
+ * @return 0 on success, non-zero on failure.
+ */
+static int _ztp_cbor_write_bytes(_ztp_cbor_t* cbor, const uint8_t* data, size_t length)
+{
+  if(cbor->position + length <= cbor->capacity) {
+    memcpy(&cbor->buffer[cbor->position], data, length);
+    cbor->position += length;
+    return 0; // Success
+  }
+  return -1; // Buffer overflow
+}
+
+/**
+ * @brief Encodes the type and value into CBOR format.
+ *
+ * @param cbor CBOR context.
+ * @param majorType Major type of the CBOR data.
+ * @param value Value to encode.
+ *
+ * @return 0 on success, non-zero on failure.
+ */
+static int _ztp_cbor_encode_type_and_value(_ztp_cbor_t* cbor, uint8_t majorType, size_t value)
+{
+  if(value < 24) {
+    return _ztp_cbor_write_byte(cbor, (majorType << 5) | value);
+  } else if(value < 256) {
+    if(_ztp_cbor_write_byte(cbor, (majorType << 5) | 0x18) < 0)
+      return -1;
+    return _ztp_cbor_write_byte(cbor, (uint8_t) value);
+  } else if(value < 65536) {
+    if(_ztp_cbor_write_byte(cbor, (majorType << 5) | 0x19) < 0)
+      return -1;
+    uint8_t bytes[] = { (uint8_t) (value >> 8), (uint8_t) value };
+    return _ztp_cbor_write_bytes(cbor, bytes, 2);
+  }
+  return -1; // Larger values not supported
+}
+
+/**
+ * @brief Encodes a byte string into CBOR format.
+ *
+ * @param cbor CBOR context.
+ * @param data Data to encode.
+ * @param length Length of data to encode.
+ *
+ * @return 0 on success, non-zero on failure.
+ */
+static int _ztp_cbor_encode_bytes(_ztp_cbor_t* cbor, const uint8_t* data, size_t length)
+{
+  if(_ztp_cbor_encode_type_and_value(cbor, 2, length) < 0)
+    return -1;                                      // Major type 2 (byte string)
+  return _ztp_cbor_write_bytes(cbor, data, length); // Write byte array to buffer
+}
+
+/**
+ * @brief Encodes a string into CBOR format.
+ *
+ * @param cbor CBOR context.
+ * @param str String to encode.
+ *
+ * @return 0 on success, non-zero on failure.
+ */
+static int _ztp_cbor_encode_string(_ztp_cbor_t* cbor, const char* str)
+{
+  size_t len = strlen(str);
+  if(_ztp_cbor_encode_type_and_value(cbor, 3, len) < 0)
+    return -1; // Major type 3 (text string)
+  return _ztp_cbor_write_bytes(cbor, (const uint8_t*) str, len);
+}
+
+/**
+ * @brief Encodes a 64-bit unsigned integer into CBOR format.
+ *
+ * @param cbor CBOR context.
+ * @param value Value to encode.
+ *
+ * @return 0 on success, non-zero on failure.
+ */
+static int _ztp_cbor_encode_uint64(_ztp_cbor_t* cbor, uint64_t value)
+{
+  if(_ztp_cbor_encode_type_and_value(cbor, 2, 8) < 0)
+    return -1;
+
+  uint8_t bytes[] = { (uint8_t) (value >> 56), (uint8_t) (value >> 48), (uint8_t) (value >> 40),
+                      (uint8_t) (value >> 32), (uint8_t) (value >> 24), (uint8_t) (value >> 16),
+                      (uint8_t) (value >> 8),  (uint8_t) value };
+
+  return _ztp_cbor_write_bytes(cbor, bytes, 8);
+}
+
+/**
+ * @brief Encodes a signed integer into CBOR format.
+ *
+ * @param cbor @brief CBOR context.
+ * @param value @brief Value to encode.
+ *
+ * @return @brief 0 on success, non-zero on failure.
+ */
+static int _ztp_cbor_encode_int(_ztp_cbor_t* cbor, int value)
+{
+  if(value >= 0) {
+    return _ztp_cbor_encode_type_and_value(cbor, 0,
+                                           (size_t) value); // Major type 0
+  } else {
+    return _ztp_cbor_encode_type_and_value(cbor, 1,
+                                           (size_t) (-value - 1)); // Major type 1
+  }
+}
+
+/**
+ * @brief Starts encoding an array into CBOR format.
+ *
+ * @param cbor @brief CBOR context.
+ * @param size @brief Expected size of the array.
+ *
+ * @return @brief 0 on success, non-zero on failure.
+ */
+static int _ztp_cbor_start_array(_ztp_cbor_t* cbor, size_t size)
+{
+  return _ztp_cbor_encode_type_and_value(cbor, 4, size); // Major type 4 (array)
+}
+
+/**
+ * @brief Starts encoding a map into CBOR format.
+ *
+ * @param cbor @brief CBOR context.
+ * @param size @brief Expected size of the map.
+ *
+ * @return @brief 0 on success, non-zero on failure.
+ */
+static int _ztp_cbor_start_map(_ztp_cbor_t* cbor, size_t size)
+{
+  return _ztp_cbor_encode_type_and_value(cbor, 5, size); // Major type 5 (map)
+}
+
+/**
+ * @brief Decodes a device ID from CBOR data.
+ *
+ * @param cbor_data @brief CBOR data to decode.
+ * @param cbor_size @brief Size of CBOR data.
+ * @param decoded_str @brief Buffer to store decoded device ID.
+ * @param decoded_size @brief Size of decoded device ID buffer.
+ *
+ * @return @brief 0 on success, non-zero on failure.
+ */
+static int _ztp_cbor_decode_device_id(const uint8_t* cbor_data, size_t cbor_size, char* decoded_str,
+                                      size_t decoded_size)
+{
+  if(cbor_size < 1 || !cbor_data) {
+    return -1; // CBOR data is invalid
+  }
+
+  // Ensure initial byte is a text string (major type 3)
+  uint8_t initial_byte = cbor_data[0];
+  if((initial_byte >> 5) != 3) {
+    return -2; // CBOR data is not a text string
+  }
+
+  // Extract the length of the string
+  size_t length = 0;
+  uint8_t additional_info = initial_byte & 0x1F;
+
+  if(additional_info > 23) {
+    return -3; // String length unsupported
+  }
+
+  length = additional_info;
+  cbor_data++;
+  cbor_size--;
+
+  // Validate the length against the remaining CBOR data
+  if(length > cbor_size) {
+    return -4; // Incomplete CBOR data for string length
+  }
+
+  // Validate the length against the output buffer size
+  if(length >= decoded_size) {
+    return -5; // Decoded string buffer too small
+  }
+
+  // Copy the string into the output buffer and null-terminate it
+  memcpy(decoded_str, cbor_data, length);
+  decoded_str[length] = '\0';
+
+  return 0;
+}
+
+/**
+ * @brief Decodes a signed certificate from CBOR data.
+ *
+ * @param cbor_data @brief CBOR data to decode.
+ * @param cbor_size @brief Size of CBOR data.
+ * @param decoded_data @brief Buffer to store decoded certificate.
+ * @param decoded_len @brief Pointer to store size of decoded certificate.
+ *
+ * @return @brief 0 on success, non-zero on failure.
+ */
+static int _ztp_cbor_decode_certificate(const uint8_t* cbor_data, size_t cbor_size,
+                                        unsigned char* decoded_data, size_t* decoded_len)
+{
+  if(cbor_size < 1 || !cbor_data) {
+    return -1; // CBOR data is invalid
+  }
+
+  // Ensure initial byte is a byte string (major type 2)
+  uint8_t initial_byte = cbor_data[0];
+  if((initial_byte >> 5) != 2) {
+    return -2; // CBOR data is not a byte string
+  }
+
+  // Extract the length of the string
+  size_t length = 0;
+  size_t offset = 1;
+  uint8_t additional_info = initial_byte & 0x1F;
+
+  if(additional_info < 24) {
+    length = additional_info;
+  } else if(additional_info == 24) {
+    length = cbor_data[offset++];
+  } else if(additional_info == 25) {
+    length = (cbor_data[offset] << 8) | cbor_data[offset + 1];
+    offset += 2;
+  } else if(additional_info == 26) {
+    length = (cbor_data[offset] << 24) | (cbor_data[offset + 1] << 16) |
+             (cbor_data[offset + 2] << 8) | cbor_data[offset + 3];
+    offset += 4;
+  } else {
+    return -3; // Length not supported
+  }
+
+  if(offset + length > cbor_size) {
+    return -4; // Length exceeds buffer size
+  }
+
+  memcpy(decoded_data, cbor_data + offset, length);
+  *decoded_len = length;
+
+  return 0;
+}
+
+/**
+ * @brief Add a device ID parameter of blob type.
+ *
+ * This function adds a device ID parameter of blob type to the ZTP device ID parameters list
+ * (e.g., MAC address).
+ *
+ * @param type The type of the device ID parameter.
+ * @param blob The blob value of the device ID parameter.
+ *
+ * @return true if the parameter was added successfully, false otherwise.
+ */
+static bool _ztp_add_device_id_parameter_blob(bluecherry_ztp_device_id_type type,
+                                              const unsigned char* blob)
+{
+  if(blob == NULL ||
+     _bluecherry_opdata.ztp_devIdParams.count >= BLUECHERRY_ZTP_MAX_DEVICE_ID_PARAMS) {
+    return false;
+  }
+
+  switch(type) {
+  case BLUECHERRY_ZTP_DEVICE_ID_TYPE_MAC:
+    _bluecherry_opdata.ztp_devIdParams.param[_bluecherry_opdata.ztp_devIdParams.count].type =
+        BLUECHERRY_ZTP_DEVICE_ID_TYPE_MAC;
+    memcpy(_bluecherry_opdata.ztp_devIdParams.param[_bluecherry_opdata.ztp_devIdParams.count]
+               .value.mac,
+           blob, BLUECHERRY_ZTP_MAC_LEN);
+    _bluecherry_opdata.ztp_devIdParams.count += 1;
+    break;
+
+  default:
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * @brief Request the device ID from the BlueCherry ZTP server.
+ *
+ * This function constructs a CBOR-encoded request containing the device type ID and
+ * device ID parameters, sends it to the BlueCherry ZTP server via CoAP,
+ * and decodes the received device ID.
+ *
+ * @return true if the device ID was successfully requested and decoded, false otherwise.
+ */
+static bool _ztp_request_device_id()
+{
+  int ret;
+  uint8_t cborBuf[256];
+  _ztp_cbor_t cbor;
+
+  if(_ztp_cbor_init(&cbor, cborBuf, sizeof(cborBuf)) < 0) {
+    ESP_LOGE(TAG, "Failed to init CBOR buffer");
+    return false;
+  };
+
+  // Start the CBOR array
+  if(_ztp_cbor_start_array(&cbor, 2) < 0) {
+    ESP_LOGE(TAG, "Failed to start CBOR array");
+    return false;
+  }
+
+  // Encode type ID value
+  if(_ztp_cbor_encode_string(&cbor, bcTypeId) < 0) {
+    ESP_LOGE(TAG, "Failed to encode typeId value");
+    return false;
+  }
+
+  // Start the CBOR map (key-value pairs)
+  if(_ztp_cbor_start_map(&cbor, _bluecherry_opdata.ztp_devIdParams.count) < 0) {
+    ESP_LOGE(TAG, "Failed to start CBOR map");
+    return false;
+  }
+
+  for(size_t i = 0; i < _bluecherry_opdata.ztp_devIdParams.count; i++) {
+
+    int type = (int) _bluecherry_opdata.ztp_devIdParams.param[i].type;
+    if(_ztp_cbor_encode_int(&cbor, type) < 0) {
+      ESP_LOGE(TAG, "Failed to encode param type (%u)", type);
+      return false;
+    }
+
+    switch(_bluecherry_opdata.ztp_devIdParams.param[i].type) {
+    case BLUECHERRY_ZTP_DEVICE_ID_TYPE_IMEI: {
+      // Encode IMEI number (15 characters)
+      uint64_t imei = strtoull(_bluecherry_opdata.ztp_devIdParams.param[i].value.imei, NULL, 10);
+      if(_ztp_cbor_encode_uint64(&cbor, imei) < 0) {
+        ESP_LOGE(TAG, "Failed to encode IMEI number");
+        return false;
+      }
+    } break;
+
+    case BLUECHERRY_ZTP_DEVICE_ID_TYPE_MAC: {
+      // Encode MAC address (6 bytes)
+      if(_ztp_cbor_encode_bytes(
+             &cbor, (uint8_t*) _bluecherry_opdata.ztp_devIdParams.param[i].value.mac, 6) < 0) {
+        ESP_LOGE(TAG, "Failed to encode MAC address");
+        return false;
+      }
+    } break;
+
+    case BLUECHERRY_ZTP_DEVICE_ID_TYPE_OOB_CHALLENGE: {
+      // Encode OOB challenge (64 bit unsigned int)
+      uint64_t oobChallenge = _bluecherry_opdata.ztp_devIdParams.param[0].value.oobChallenge;
+      if(_ztp_cbor_encode_uint64(&cbor, oobChallenge) < 0) {
+        ESP_LOGE(TAG, "Failed to encode OOB challenge");
+        return false;
+      }
+    } break;
+
+    default:
+      break;
+    }
+  }
+
+  uint8_t in_buf[16];
+  uint16_t in_len = 0;
+  if(!_bluecherry_ztp_coap_rxtx_devid(cborBuf, _ztp_cbor_size(&cbor), in_buf, &in_len)) {
+    ESP_LOGE("ZTP", "Failed to sync with ZTP COAP server");
+    return false;
+  }
+
+  ret = _ztp_cbor_decode_device_id(in_buf, in_len, ztp_bcDevId, sizeof(ztp_bcDevId));
+  if(ret < 0) {
+    ESP_LOGE(TAG, "Failed to decode device id: %d", ret);
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * @brief Generate a key pair and CSR for ZTP.
+ *
+ * This function generates an EC key pair and creates a Certificate Signing Request (CSR)
+ * using the provided device type ID and device ID. The generated private key is stored
+ * in PEM format in the global ztp_pkeyBuf, and the CSR is stored in the _bluecherry_opdata
+ * structure.
+ *
+ * @return true if the key pair and CSR were generated successfully, false otherwise.
+ */
+static bool _ztp_generate_key_and_csr()
+{
+  int ret;
+  uint8_t csrBuf[BLUECHERRY_ZTP_CERT_BUF_SIZE];
+
+  if(bcTypeId == NULL || strlen(bcTypeId) != BLUECHERRY_ZTP_ID_LEN ||
+     strlen(ztp_bcDevId) != BLUECHERRY_ZTP_ID_LEN) {
+    return false;
+  }
+
+  mbedtls_pk_init(&_bluecherry_opdata.devkey);
+  mbedtls_x509write_csr_init(&_bluecherry_opdata.ztp_mbCsr);
+
+  if(mbedtls_pk_setup(&_bluecherry_opdata.devkey, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)) !=
+     0) {
+    return _ztp_finish_csr_gen(false);
+  }
+
+  if(mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(_bluecherry_opdata.devkey),
+                         mbedtls_ctr_drbg_random, &_bluecherry_opdata.ctr_drbg) != 0) {
+    return _ztp_finish_csr_gen(false);
+  }
+
+  if(mbedtls_pk_write_key_pem(&_bluecherry_opdata.devkey, (unsigned char*) ztp_pkeyBuf,
+                              BLUECHERRY_ZTP_PKEY_BUF_SIZE) != 0) {
+    return _ztp_finish_csr_gen(false);
+  }
+
+  mbedtls_x509write_csr_set_md_alg(&_bluecherry_opdata.ztp_mbCsr, MBEDTLS_MD_SHA256);
+  mbedtls_x509write_csr_set_key(&_bluecherry_opdata.ztp_mbCsr, &_bluecherry_opdata.devkey);
+
+  snprintf(ztp_subjBuf, BLUECHERRY_ZTP_SUBJ_BUF_SIZE, "C=BE,CN=%s.%s", bcTypeId, ztp_bcDevId);
+  if(mbedtls_x509write_csr_set_subject_name(&_bluecherry_opdata.ztp_mbCsr, ztp_subjBuf) != 0) {
+    return _ztp_finish_csr_gen(false);
+  }
+
+  ret =
+      mbedtls_x509write_csr_der(&_bluecherry_opdata.ztp_mbCsr, csrBuf, BLUECHERRY_ZTP_CERT_BUF_SIZE,
+                                mbedtls_ctr_drbg_random, &_bluecherry_opdata.ctr_drbg);
+  if(ret < 0) {
+    ESP_LOGE(TAG, "Failed to write CSR DER: -0x%04X\n", -ret);
+    return _ztp_finish_csr_gen(false);
+  }
+
+  size_t offset = BLUECHERRY_ZTP_CERT_BUF_SIZE - ret;
+  _bluecherry_opdata.ztp_csr.length = ret;
+  memcpy(_bluecherry_opdata.ztp_csr.buffer, csrBuf + offset, _bluecherry_opdata.ztp_csr.length);
+
+  return _ztp_finish_csr_gen(true);
+}
+
+/**
+ * @brief Request a signed certificate from the BlueCherry ZTP server.
+ *
+ * This function sends the previously generated CSR to the BlueCherry ZTP server
+ * via CoAP, receives the signed certificate in DER format, converts it to PEM format,
+ * and stores it in the global ztp_certBuf.
+ *
+ * @return true if the signed certificate was successfully requested and stored, false otherwise.
+ */
+static bool _ztp_request_signed_certificate()
+{
+  int ret;
+  uint8_t cborBuf[BLUECHERRY_ZTP_CERT_BUF_SIZE];
+  uint8_t coapData[BLUECHERRY_ZTP_CERT_BUF_SIZE];
+  _ztp_cbor_t cbor;
+
+  _ztp_cbor_init(&cbor, cborBuf, BLUECHERRY_ZTP_CERT_BUF_SIZE);
+  mbedtls_x509_crt_init(&_bluecherry_opdata.devcert);
+
+  if(_ztp_cbor_encode_bytes(&cbor, _bluecherry_opdata.ztp_csr.buffer,
+                            _bluecherry_opdata.ztp_csr.length) < 0) {
+    ESP_LOGE(TAG, "Failed to encode CSR");
+    return false;
+  }
+
+  uint16_t in_len = 0;
+  if(!_bluecherry_ztp_coap_rxtx_sign(cborBuf, _ztp_cbor_size(&cbor), coapData, &in_len)) {
+    ESP_LOGE("ZTP", "Failed to receive response from ZTP COAP server");
+    return false;
+  }
+
+  size_t decodedSize;
+  ret = _ztp_cbor_decode_certificate(coapData, in_len, cborBuf, &decodedSize);
+  if(ret < 0) {
+    ESP_LOGE(TAG, "Failed to decode certificate: %d", ret);
+    return false;
+  }
+
+  // Parse the DER-encoded certificate
+  ret = mbedtls_x509_crt_parse_der(&_bluecherry_opdata.devcert, cborBuf, decodedSize);
+  if(ret < 0) {
+    ESP_LOGE(TAG, "Failed to parse DER certificate, error code: -0x%x", -ret);
+    mbedtls_x509_crt_free(&_bluecherry_opdata.devcert);
+    return false;
+  }
+
+  // Convert the certificate to PEM format
+  size_t pemLen;
+  ret =
+      mbedtls_pem_write_buffer("-----BEGIN CERTIFICATE-----\n", "-----END CERTIFICATE-----\n",
+                               _bluecherry_opdata.devcert.raw.p, _bluecherry_opdata.devcert.raw.len,
+                               cborBuf, BLUECHERRY_ZTP_CERT_BUF_SIZE, &pemLen);
+  if(ret < 0) {
+    ESP_LOGE(TAG, "Failed to write PEM: -0x%04X", -ret);
+    mbedtls_x509_crt_free(&_bluecherry_opdata.devcert);
+    return false;
+  }
+
+  memcpy(ztp_certBuf, cborBuf, pemLen);
+  ztp_certBuf[pemLen] = '\0';
+
+  mbedtls_x509_crt_free(&_bluecherry_opdata.devcert);
+  return true;
+}
+
+#pragma endregion
+#pragma region PUBLIC
 
 esp_err_t bluecherry_init(const char* device_cert, const char* device_key,
                           bluecherry_msg_handler_t msg_handler, void* msg_handler_args,
                           bool auto_sync, uint16_t watchdog_timeout_seconds)
 {
-  if(_bluecherry_opdata.state != BLUECHERRY_STATE_UNINITIALIZED) {
+  if(_bluecherry_opdata.state != BLUECHERRY_STATE_UNINITIALIZED)
     return ESP_OK;
-  }
 
   _bluecherry_opdata.msg_handler = msg_handler;
   _bluecherry_opdata.msg_handler_args = msg_handler_args;
@@ -619,7 +1587,7 @@ esp_err_t bluecherry_init(const char* device_cert, const char* device_key,
   uint8_t mac[6];
   esp_err_t eret = esp_read_mac(mac, ESP_MAC_WIFI_STA);
   if(eret != ESP_OK) {
-    ESP_LOGE(TAG, "Could not read the MAC of the ESP32: %s", esp_err_to_name(eret));
+    ESP_LOGE(TAG, "Could not read MAC: %s", esp_err_to_name(eret));
     return ESP_FAIL;
   }
 
@@ -630,84 +1598,23 @@ esp_err_t bluecherry_init(const char* device_cert, const char* device_key,
     return ESP_FAIL;
   }
 
-  mbedtls_ssl_init(&_bluecherry_opdata.ssl);
-  mbedtls_ssl_config_init(&_bluecherry_opdata.ssl_conf);
-  mbedtls_ctr_drbg_init(&_bluecherry_opdata.ctr_drbg);
-  mbedtls_entropy_init(&_bluecherry_opdata.entropy);
-  mbedtls_x509_crt_init(&_bluecherry_opdata.cacert);
-  mbedtls_x509_crt_init(&_bluecherry_opdata.devcert);
-  mbedtls_pk_init(&_bluecherry_opdata.devkey);
-
-  int ret = mbedtls_ctr_drbg_seed(&_bluecherry_opdata.ctr_drbg, mbedtls_entropy_func,
-                                  &_bluecherry_opdata.entropy, mac, sizeof(mac));
-  if(ret != 0) {
-    ESP_LOGE(TAG, "Could not seed RNG: -%04X", -ret);
-    goto error;
+  if(!_bluecherry_setup_mbedtls(mac)) {
+    ESP_LOGE(TAG, "Could not setup Mbed TLS context");
+    goto fail;
   }
-
-  ret = mbedtls_x509_crt_parse(&_bluecherry_opdata.cacert, (const uint8_t*) BLUECHERRY_CA,
-                               strlen(BLUECHERRY_CA) + 1);
-  if(ret != 0) {
-    ESP_LOGE(TAG, "Could not parse BlueCherry CA certificate: -%04X", -ret);
-    goto error;
-  }
-
-  ret = mbedtls_x509_crt_parse(&_bluecherry_opdata.devcert, (const uint8_t*) device_cert,
-                               strlen(device_cert) + 1);
-  if(ret != 0) {
-    ESP_LOGE(TAG, "Could not parse BlueCherry device certificate: -%04X", -ret);
-    goto error;
-  }
-
-  ret = mbedtls_pk_parse_key(&_bluecherry_opdata.devkey, (const uint8_t*) device_key,
-                             strlen(device_key) + 1, NULL, 0, mbedtls_entropy_func,
-                             &_bluecherry_opdata.ctr_drbg);
-  if(ret != 0) {
-    ESP_LOGE(TAG, "Could not parse the BlueCherry device key: -%04X", -ret);
-    goto error;
-  }
-
-  ret = mbedtls_ssl_config_defaults(&_bluecherry_opdata.ssl_conf, MBEDTLS_SSL_IS_CLIENT,
-                                    MBEDTLS_SSL_TRANSPORT_DATAGRAM, MBEDTLS_SSL_PRESET_DEFAULT);
-  if(ret != 0) {
-    ESP_LOGE(TAG, "Could not configure DTLS defaults: -%04X", -ret);
-    goto error;
-  }
-
-  mbedtls_ssl_conf_read_timeout(&_bluecherry_opdata.ssl_conf, BLUECHERRY_SSL_READ_TIMEOUT);
-  mbedtls_ssl_conf_authmode(&_bluecherry_opdata.ssl_conf, MBEDTLS_SSL_VERIFY_REQUIRED);
-  mbedtls_ssl_conf_ca_chain(&_bluecherry_opdata.ssl_conf, &_bluecherry_opdata.cacert, NULL);
-  mbedtls_ssl_conf_rng(&_bluecherry_opdata.ssl_conf, mbedtls_ctr_drbg_random,
-                       &_bluecherry_opdata.ctr_drbg);
-
-  ret = mbedtls_ssl_conf_own_cert(&_bluecherry_opdata.ssl_conf, &_bluecherry_opdata.devcert,
-                                  &_bluecherry_opdata.devkey);
-  if(ret != 0) {
-    ESP_LOGE(TAG, "Could not configure BlueCherry device certificate in context: -%04X", -ret);
-    goto error;
-  }
-
-  ret = mbedtls_ssl_setup(&_bluecherry_opdata.ssl, &_bluecherry_opdata.ssl_conf);
-  if(ret != 0) {
-    ESP_LOGE(TAG, "Could not setup the SSL context for use: -%04X", -ret);
-    goto error;
-  }
-
-  mbedtls_ssl_set_timer_cb(&_bluecherry_opdata.ssl, &_bluecherry_opdata.timer,
-                           mbedtls_timing_set_delay, mbedtls_timing_get_delay);
-
-  ret = mbedtls_ssl_set_hostname(&_bluecherry_opdata.ssl, BLUECHERRY_HOST);
-  if(ret != 0) {
-    ESP_LOGE(TAG, "Could not set the hostname in the SSL context: -%04X", -ret);
-    goto error;
+  if(!_bluecherry_configure_credentials(BLUECHERRY_CA, device_cert, device_key)) {
+    ESP_LOGE(TAG, "Could not configure credentials");
+    goto fail;
   }
 
   _bluecherry_opdata.state = BLUECHERRY_STATE_AWAIT_CONNECTION;
-
-  if(bluecherry_connect() != ESP_OK) {
-    ESP_LOGE(TAG, "Could not connect to BlueCherry platform");
-    goto error;
+  if(!_bluecherry_dtls_connect(BLUECHERRY_HOST, BLUECHERRY_PORT)) {
+    ESP_LOGE(TAG, "Could not connect to BlueCherry server");
+    goto fail;
   }
+
+  _bluecherry_opdata.state = BLUECHERRY_STATE_CONNECTED_IDLE;
+  ESP_LOGI(TAG, "BlueCherry DTLS session established");
 
   if(watchdog_timeout_seconds > 0) {
 #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 0, 0)
@@ -730,37 +1637,108 @@ esp_err_t bluecherry_init(const char* device_cert, const char* device_key,
   if(auto_sync) {
     BaseType_t ret = xTaskCreate(_bluecherry_sync_task, "bc_sync", 4096, NULL, BLUECHERRY_SP, NULL);
     if(ret != pdPASS) {
-      shutdown(_bluecherry_opdata.sock, 0);
-      close(_bluecherry_opdata.sock);
       vQueueDelete(_bluecherry_opdata.out_queue);
       _bluecherry_opdata.out_queue = NULL;
-      return ESP_ERR_NO_MEM;
+      goto fail;
     }
   }
 
   return ESP_OK;
 
-error:
-  vQueueDelete(_bluecherry_opdata.out_queue);
-  _bluecherry_opdata.out_queue = NULL;
-  mbedtls_ssl_free(&_bluecherry_opdata.ssl);
-  mbedtls_ssl_config_free(&_bluecherry_opdata.ssl_conf);
-  mbedtls_ctr_drbg_free(&_bluecherry_opdata.ctr_drbg);
-  mbedtls_entropy_free(&_bluecherry_opdata.entropy);
-  mbedtls_x509_crt_free(&_bluecherry_opdata.cacert);
-  mbedtls_x509_crt_free(&_bluecherry_opdata.devcert);
-  mbedtls_pk_free(&_bluecherry_opdata.devkey);
+fail:
+  _bluecherry_cleanup_network();
+  _bluecherry_cleanup_mbedtls();
   _bluecherry_opdata.state = BLUECHERRY_STATE_UNINITIALIZED;
+  return ESP_FAIL;
+}
+
+esp_err_t bluecherry_init_ztp(bluecherry_ztp_bio_handler_t ztp_bio_handler,
+                              void* ztp_bio_handler_args, const char* bc_device_type,
+                              bluecherry_msg_handler_t msg_handler, void* msg_handler_args,
+                              bool auto_sync, uint16_t watchdog_timeout_seconds)
+{
+  if(_bluecherry_opdata.state != BLUECHERRY_STATE_UNINITIALIZED) {
+    return ESP_OK;
+  }
+
+  bcTypeId = bc_device_type;
+
+  // Get existing device credentials using the provided BIO handler
+  const char* device_cert = ztp_bio_handler(true, false, NULL);
+  const char* device_key = ztp_bio_handler(true, true, NULL);
+
+  if(device_cert == NULL || device_key == NULL) {
+    ESP_LOGW(TAG, "Device is not provisioned for BlueCherry communication, starting ZTP...");
+
+    uint8_t mac[8] = { 0 };
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+
+    if(!_bluecherry_setup_mbedtls(mac)) {
+      ESP_LOGE(TAG, "(ZTP) Could not setup Mbed TLS context");
+      goto fail;
+    }
+    if(!_bluecherry_configure_credentials(BLUECHERRY_CA, NULL, NULL)) {
+      ESP_LOGE(TAG, "(ZTP) Could not configure credentials");
+      goto fail;
+    }
+    if(!_bluecherry_dtls_connect(BLUECHERRY_HOST, BLUECHERRY_ZTP_PORT)) {
+      ESP_LOGE(TAG, "(ZTP) Could not connect to BlueCherry server");
+      goto fail;
+    }
+
+    ESP_LOGI(TAG, "Connected to ZTP server");
+
+    if(!_ztp_add_device_id_parameter_blob(BLUECHERRY_ZTP_DEVICE_ID_TYPE_MAC, mac)) {
+      ESP_LOGE(TAG, "(ZTP) Could not add MAC address as ZTP device ID parameter");
+      goto fail;
+    }
+
+    if(!_ztp_request_device_id()) {
+      ESP_LOGE(TAG, "(ZTP) Could not request device ID");
+      goto fail;
+    }
+
+    if(!_ztp_generate_key_and_csr()) {
+      ESP_LOGE(TAG, "(ZTP) Could not generate private key");
+      goto fail;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
+    if(!_ztp_request_signed_certificate()) {
+      ESP_LOGE(TAG, "(ZTP) Could not request signed certificate");
+      goto fail;
+    }
+
+    const char* new_cert = ztp_certBuf;
+    const char* new_key = ztp_pkeyBuf;
+
+    // Store the new credentials using the provided BIO handler
+    ztp_bio_handler(false, false, (void*) new_cert);
+    ztp_bio_handler(false, true, (void*) new_key);
+
+    device_cert = new_cert;
+    device_key = new_key;
+  }
+
+  return bluecherry_init(device_cert, device_key, msg_handler, msg_handler_args, auto_sync,
+                         watchdog_timeout_seconds);
+
+fail:
+  _bluecherry_cleanup_network();
+  _bluecherry_cleanup_mbedtls();
+  _bluecherry_opdata.ztp_devIdParams.count = 0;
   return ESP_FAIL;
 }
 
 esp_err_t bluecherry_sync(bool blocking)
 {
   if(_bluecherry_opdata.state == BLUECHERRY_STATE_AWAIT_CONNECTION) {
-    esp_err_t ret = bluecherry_connect();
-    if(ret != ESP_OK) {
-      return ret;
+    if(!_bluecherry_dtls_connect(BLUECHERRY_HOST, BLUECHERRY_PORT)) {
+      ESP_LOGE(TAG, "Could not connect to BlueCherry server");
+      return ESP_ERR_NOT_FINISHED;
     }
+    _bluecherry_opdata.state = BLUECHERRY_STATE_CONNECTED_IDLE;
   }
 
   if(_bluecherry_opdata.state == BLUECHERRY_STATE_UNINITIALIZED ||
@@ -857,11 +1835,6 @@ esp_err_t bluecherry_sync(bool blocking)
     offset += data_len;
   }
 
-  _bluecherry_opdata.cur_message_id += 1;
-  if(_bluecherry_opdata.cur_message_id == 0) {
-    _bluecherry_opdata.cur_message_id = 1;
-  }
-
   if(want_resync) {
     _bluecherry_opdata.state = BLUECHERRY_STATE_CONNECTED_PENDING_MESSAGES;
     return BLUECHERRY_SYNC_CONTINUE;
@@ -901,3 +1874,5 @@ esp_err_t bluecherry_publish(uint8_t topic, uint16_t len, const uint8_t* data)
 
   return ESP_OK;
 }
+
+#pragma endregion

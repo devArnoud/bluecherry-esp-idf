@@ -1,9 +1,11 @@
 /**
  * @file bluecherry.h
- * @author Daan Pape (daan@dptechnics.com)
+ * @author Daan Pape <daan@dptechnics.com>
+ * @author Thibo Verheyde <thibo@dptechnics.com>
+ * @author Arnoud Devoogdt <arnoud@dptechnics.com>
  * @brief This code connects to the BlueCherry platform.
- * @version 1.2.0
- * @date 2025-07-25
+ * @version 1.3.0
+ * @date 2025-10-27
  * @copyright Copyright (c) 2025 DPTechnics BV
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
@@ -19,10 +21,13 @@
  */
 
 #include <mbedtls/net_sockets.h>
+#include <bootloader_random.h>
 #include <freertos/FreeRTOS.h>
 #include <mbedtls/platform.h>
 #include <mbedtls/ctr_drbg.h>
 #include <esp_image_format.h>
+#include <mbedtls/x509_crt.h>
+#include <mbedtls/x509_csr.h>
 #include <mbedtls/entropy.h>
 #include <spi_flash_mmap.h>
 #include <mbedtls/timing.h>
@@ -34,12 +39,17 @@
 #include <lwip/sockets.h>
 #include <esp_ota_ops.h>
 #include <esp_vfs_fat.h>
+#include <mbedtls/pem.h>
+#include <mbedtls/pk.h>
+#include <esp_random.h>
 #include <esp_vfs.h>
 #include <esp_log.h>
 #include <esp_mac.h>
 #include <esp_err.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 #include <netdb.h>
 #include <errno.h>
@@ -83,9 +93,56 @@ extern "C" {
 #define SPI_FLASH_BLOCK_SIZE (SPI_SECTORS_PER_BLOCK * SPI_FLASH_SEC_SIZE)
 
 /**
- * @brief The maximum number of pending outgoing messages.
+ * @brief The size of the private key buffer.
  */
-static const UBaseType_t BLUECHERRY_MAX_PENDING_OUTGOING_MESSAGES = 32;
+#define BLUECHERRY_ZTP_PKEY_BUF_SIZE 256
+
+/**
+ * @brief The size of the CSR/certificate buffer.
+ */
+#define BLUECHERRY_ZTP_CERT_BUF_SIZE 576
+
+/**
+ * @brief The number of characters in a BlueCherry Type ID or Device ID.
+ */
+#define BLUECHERRY_ZTP_ID_LEN 8
+
+/**
+ * @brief The size of the CSR subject buffer.
+ */
+#define BLUECHERRY_ZTP_SUBJ_BUF_SIZE 32
+
+/**
+ * @brief The length of a MAC address in bytes.
+ */
+#define BLUECHERRY_ZTP_MAC_LEN 6
+
+/**
+ * @brief The length of an IMEI number.
+ */
+#define BLUECHERRY_ZTP_IMEI_LEN 15
+
+/**
+ * @brief The maximum number of device identification parameters.
+ */
+#define BLUECHERRY_ZTP_MAX_DEVICE_ID_PARAMS 3
+
+/**
+ * @brief The maximum time in seconds to wait for a CoAP ring.
+ */
+#define BLUECHERRY_ZTP_COAP_TIMEOUT 30
+
+/**
+ * @brief Header of the function that handles reading/writing of certificates and keys
+ * for zero-touch provisioning.
+ *
+ * @param read True when reading, false when writing.
+ * @param secure True when handling the private key, false when handling the certificate.
+ * @param args Optional user arguments, key or certificate passed as arguments when writing.
+ *
+ * @return The certificate or key when reading, NULL when writing.
+ */
+typedef const char* (*bluecherry_ztp_bio_handler_t)(bool read, bool secure, void* args);
 
 /**
  * @brief Header of the function that handles incoming MQTT messages.
@@ -104,6 +161,16 @@ typedef void (*bluecherry_msg_handler_t)(uint8_t topic, uint16_t len, const uint
                                          void* args);
 
 /**
+ * @brief This enumeration list all different types of device identification
+ * parameters.
+ */
+typedef enum {
+  BLUECHERRY_ZTP_DEVICE_ID_TYPE_MAC = 0,
+  BLUECHERRY_ZTP_DEVICE_ID_TYPE_IMEI,
+  BLUECHERRY_ZTP_DEVICE_ID_TYPE_OOB_CHALLENGE
+} bluecherry_ztp_device_id_type;
+
+/**
  * @brief The different states the BlueCherry connection can be in.
  */
 typedef enum {
@@ -113,7 +180,7 @@ typedef enum {
   BLUECHERRY_STATE_CONNECTED_AWAITING_RESPONSE,
   BLUECHERRY_STATE_CONNECTED_TIMED_OUT,
   BLUECHERRY_STATE_CONNECTED_RECEIVED_ACK,
-  BLUECHERRY_STATE_CONNECTED_PENDING_MESSAGES,
+  BLUECHERRY_STATE_CONNECTED_PENDING_MESSAGES
 } bluecherry_state;
 
 /**
@@ -145,14 +212,9 @@ typedef enum {
 } _bluecherry_event_type;
 
 /**
- * @brief The hostname of the BlueCherry cloud.
+ * @brief The maximum number of pending outgoing messages.
  */
-static const char* BLUECHERRY_HOST = "coap.bluecherry.io";
-
-/**
- * @brief The port of the BlueCherry cloud.
- */
-static const char* BLUECHERRY_PORT = "5684";
+static const UBaseType_t BLUECHERRY_MAX_PENDING_OUTGOING_MESSAGES = 32;
 
 /**
  * @brief The priority used for automatically syncing with BlueCherry.
@@ -194,32 +256,94 @@ static const double BLUECHERRY_ACK_RANDOM_FACTOR = 1.5;
  */
 static const uint32_t BLUECHERRY_SSL_READ_TIMEOUT = 100;
 
+typedef union {
+  /**
+   * @brief Pointer to the BlueCherry Type ID, as this is always programmed in
+   * the application, no extra memory is required.
+   */
+  const char* bcTypeId;
+
+  /**
+   * @brief A MAC address used for authentication.
+   */
+  unsigned char mac[BLUECHERRY_ZTP_MAC_LEN];
+
+  /**
+   * @brief An IMEI number in ASCII format + 0-terminator.
+   */
+  char imei[BLUECHERRY_ZTP_IMEI_LEN + 1];
+
+  /**
+   * @brief A 64-bit OOB challenge.
+   */
+  unsigned long long oobChallenge;
+} _bluecherry_ztp_device_id_value_t;
+
 /**
- * @brief The BlueCherry CA root + intermediate certificate used for CoAP DTLS
- * communication.
+ * @brief This structure represents a device identifier.
  */
-static const char* BLUECHERRY_CA = "-----BEGIN CERTIFICATE-----\r\n\
-MIIBlTCCATqgAwIBAgICEAAwCgYIKoZIzj0EAwMwGjELMAkGA1UEBhMCQkUxCzAJ\r\n\
-BgNVBAMMAmNhMB4XDTI0MDMyNDEzMzM1NFoXDTQ0MDQwODEzMzM1NFowJDELMAkG\r\n\
-A1UEBhMCQkUxFTATBgNVBAMMDGludGVybWVkaWF0ZTBZMBMGByqGSM49AgEGCCqG\r\n\
-SM49AwEHA0IABJGFt28UrHlbPZEjzf4CbkvRaIjxDRGoeHIy5ynfbOHJ5xgBl4XX\r\n\
-hp/r8zOBLqSbu6iXGwgjp+wZJe1GCDi6D1KjZjBkMB0GA1UdDgQWBBR/rtuEomoy\r\n\
-49ovMAnj5Hpmk2gTGjAfBgNVHSMEGDAWgBR3Vw0Y1sUvMhkX7xySsX55tvsu8TAS\r\n\
-BgNVHRMBAf8ECDAGAQH/AgEAMA4GA1UdDwEB/wQEAwIBhjAKBggqhkjOPQQDAwNJ\r\n\
-ADBGAiEApN7DmuufC/aqyt6g2Y8qOWg6AXFUyTcub8/Y28XY3KgCIQCs2VUXCPwn\r\n\
-k8jR22wsqNvZfbndpHthtnPqI5+yFXrY4A==\r\n\
------END CERTIFICATE-----\r\n\
------BEGIN CERTIFICATE-----\r\n\
-MIIBmDCCAT+gAwIBAgIUDjfXeosg0fphnshZoXgQez0vO5UwCgYIKoZIzj0EAwMw\r\n\
-GjELMAkGA1UEBhMCQkUxCzAJBgNVBAMMAmNhMB4XDTI0MDMyMzE3MzU1MloXDTQ0\r\n\
-MDQwNzE3MzU1MlowGjELMAkGA1UEBhMCQkUxCzAJBgNVBAMMAmNhMFkwEwYHKoZI\r\n\
-zj0CAQYIKoZIzj0DAQcDQgAEB00rHNthOOYyKj80cd/DHQRBGSbJmIRW7rZBNA6g\r\n\
-fbEUrY9NbuhGS6zKo3K59zYc5R1U4oBM3bj6Q7LJfTu7JqNjMGEwHQYDVR0OBBYE\r\n\
-FHdXDRjWxS8yGRfvHJKxfnm2+y7xMB8GA1UdIwQYMBaAFHdXDRjWxS8yGRfvHJKx\r\n\
-fnm2+y7xMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgGGMAoGCCqGSM49\r\n\
-BAMDA0cAMEQCID7AcgACnXWzZDLYEainxVDxEJTUJFBhcItO77gcHPZUAiAu/ZMO\r\n\
-VYg4UI2D74WfVxn+NyVd2/aXTvSBp8VgyV3odA==\r\n\
------END CERTIFICATE-----\r\n";
+typedef struct {
+  /**
+   * @brief The type of device identifier.
+   */
+  bluecherry_ztp_device_id_type type;
+
+  /**
+   * @brief The value of the device identifier.
+   */
+  _bluecherry_ztp_device_id_value_t value;
+} _bluecherry_ztp_device_id_param_t;
+
+/**
+ * @brief This structure represents a buffer and length of a CSR stored in PEM
+ * format.
+ */
+typedef struct {
+  /**
+   * @brief The buffer used to store a CSR.
+   */
+  unsigned char buffer[BLUECHERRY_ZTP_CERT_BUF_SIZE];
+
+  /**
+   * @brief The data length of the CSR.
+   */
+  size_t length;
+} _bluecherry_ztp_csr_t;
+
+/**
+ * @brief This structure represents the device identification parameters.
+ */
+typedef struct {
+  /**
+   * @brief The array of device identification parameters.
+   */
+  _bluecherry_ztp_device_id_param_t param[BLUECHERRY_ZTP_MAX_DEVICE_ID_PARAMS];
+
+  /**
+   * @brief The number of parameters in the list.
+   */
+  int count;
+} _bluecherry_ztp_device_id_t;
+
+/**
+ * @brief The CBOR context structure.
+ */
+typedef struct {
+  /**
+   * @brief Output buffer pointer.
+   */
+  uint8_t* buffer;
+
+  /**
+   * @brief Maximum size of the buffer.
+   */
+  size_t capacity;
+
+  /**
+   * @brief Current write position in the buffer.
+   */
+  size_t position;
+} _ztp_cbor_t;
 
 /**
  * @brief This structure represents a scheduled BlueCherry message.
@@ -276,6 +400,11 @@ typedef struct {
   mbedtls_x509_crt devcert;
 
   /**
+   * @brief Mbed TLS CSR creation object.
+   */
+  mbedtls_x509write_csr ztp_mbCsr;
+
+  /**
    * @brief The device key.
    */
   mbedtls_pk_context devkey;
@@ -284,6 +413,16 @@ typedef struct {
    * @brief The Mbed TLS delay context timer.
    */
   mbedtls_timing_delay_context timer;
+
+  /**
+   * @brief The device ZTP identification data.
+   */
+  _bluecherry_ztp_device_id_t ztp_devIdParams;
+
+  /**
+   * @brief The CSR context.
+   */
+  _bluecherry_ztp_csr_t ztp_csr;
 
   /**
    * @brief The socket used to communicate with the BlueCherry cloud.
@@ -386,6 +525,29 @@ typedef struct {
 esp_err_t bluecherry_init(const char* device_cert, const char* device_key,
                           bluecherry_msg_handler_t msg_handler, void* msg_handler_args,
                           bool auto_sync, uint16_t watchdog_timeout_seconds);
+
+/**
+ * @brief Initialize the BlueCherry subsystem with ZTP.
+ *
+ * This function will initialize the BlueCherry IoT module without zero-touch provisioning enabled.
+ *
+ * @param ztp_bio_handler The handler used for reading/writing keys and certificates. This must be
+ * implemented by the application.
+ * @param ztp_bio_handler_args Optional user pointer which is passed to the ZTP bio handler.
+ * @param bc_device_type The BlueCherry device type string.
+ * @param msg_handler The handler used for incoming messages or NULL to ignore them.
+ * @param msg_handler_args Optional user pointer which is passed to the message handler.
+ * @param auto_sync When set to true, the library will atomatically perform syncs in the background.
+ * @param watchdog_timeout_seconds The timeout in seconds for the task watchdog. If not 0, your
+ * application should ensure that `esp_task_wdt_reset()` is repeatedly called within this time.
+ * Should be more than 30 seconds
+ *
+ * @return ESP_OK on success.
+ */
+esp_err_t bluecherry_init_ztp(bluecherry_ztp_bio_handler_t ztp_bio_handler,
+                              void* ztp_bio_handler_args, const char* bc_device_type,
+                              bluecherry_msg_handler_t msg_handler, void* msg_handler_args,
+                              bool auto_sync, uint16_t watchdog_timeout_seconds);
 
 /**
  * @brief Synchronize incoming and outgoing BlueCherry messages and perform OTA.
