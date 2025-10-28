@@ -42,6 +42,7 @@
 #include <mbedtls/pem.h>
 #include <mbedtls/pk.h>
 #include <esp_random.h>
+#include <esp_timer.h>
 #include <esp_vfs.h>
 #include <esp_log.h>
 #include <esp_mac.h>
